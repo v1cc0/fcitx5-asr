@@ -27,12 +27,11 @@ enum Command {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
-    let mut client = IpcClient::connect().await?;
     match Args::parse().command {
-        Command::Ping => println!("{}", client.ping().await?),
-        Command::Commit { text } => client.commit(&text).await?,
-        Command::Preedit { text } => client.preedit(&text).await?,
-        Command::Clear => client.clear().await?,
+        Command::Ping => { let mut c = IpcClient::connect().await?; println!("{}", c.ping().await?); }
+        Command::Commit { text } => { let mut c = IpcClient::connect().await?; c.commit(&text).await?; }
+        Command::Preedit { text } => { let mut c = IpcClient::connect().await?; c.preedit(&text).await?; }
+        Command::Clear => { let mut c = IpcClient::connect().await?; c.clear().await?; }
         Command::Download { int8 } => {
             let model = model::ArkModel::download_and_load(int8)?;
             println!("ARK-ASR loaded (config: {})", model.config.display());
