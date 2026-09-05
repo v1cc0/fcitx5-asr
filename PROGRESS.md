@@ -28,7 +28,7 @@
 ## 4. Next Steps (To-Dos)
 - [ ] Confirm architecture direction with user (Direction A: Native Addon Bridge vs Direction B: Pure Rust Virtual Input).
 - [x] Set up Rust project workspace and crate structure (`Cargo.toml`).
-- [x] Implement initial audio capture & resampling pipeline (`cpal`; minimal stdlib resampler).
+- [x] Implement initial audio capture & resampling pipeline (`cpal`; minimal stdlib resampler; unused `rubato` removed).
 - [ ] Implement ONNX runtime inference engine & tokenizer decoding (`ort` + `tokenizers`).
 - [ ] Implement IPC bridge / Fcitx5 integration.
 - [ ] Implement push-to-talk and VAD trigger mechanism.
