@@ -83,17 +83,20 @@ private:
 
 bool ClientSession::onReadable() {
     char buf[1024];
+    bool open = true;
     while (true) {
         ssize_t n = read(fd_, buf, sizeof(buf));
         if (n > 0) {
             readBuf_.append(buf, n);
         } else if (n == 0) {
-            return false; // EOF
+            open = false;
+            break;
         } else {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 break;
             }
-            return false; // Error
+            open = false;
+            break;
         }
     }
 
@@ -119,7 +122,7 @@ bool ClientSession::onReadable() {
             (void)write(fd_, pong, sizeof(pong) - 1);
         }
     }
-    return true;
+    return open;
 }
 
 AsrAddon::AsrAddon(Instance *instance) : instance_(instance) {
