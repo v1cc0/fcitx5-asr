@@ -2,5 +2,22 @@
 name = "fcitx5-asr"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
+authors = ["v1cc0 <vc@v1cc0.eu.org>"]
 
 [dependencies]
+cpal = "0.18.2"
+rubato = "5.0.0"
+ort = "2.0.0-rc.13"
+tokenizers = { version = "0.23.2", default-features = false, features = [
+  "onig",
+] }
+tokio = { version = "1.53.1", features = ["full"] }
+clap = { version = "4.6.6", features = ["derive"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
+anyhow = "1.0.102"
+hound = "3.5.1"
+serde = { version = "1.0.215", features = ["derive"] }
+serde_json = "1.0.140"
+libc = "0.2.189"

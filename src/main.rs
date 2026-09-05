@@ -1,3 +1,8 @@
-fn main() {
-    println!("Hello, world!");
+mod audio;
+mod ipc;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt::init();
+    Ok(())
 }

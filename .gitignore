@@ -1,4 +1,6 @@
 /target
+/addon/build
+*.so
 
 #agy
 .antigravitycli
