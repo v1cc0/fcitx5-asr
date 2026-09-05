@@ -1,5 +1,6 @@
 mod audio;
 mod ipc;
+mod model;
 
 use clap::{Parser, Subcommand};
 use ipc::IpcClient;
