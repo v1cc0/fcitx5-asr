@@ -34,6 +34,7 @@
 - [x] Fixed IPC EOF race so short-lived CLI commands are processed reliably.
 - [x] Prefer Fcitx5's last focused input context for external commit requests.
 - [x] Added `OK` acknowledgements so CLI waits for addon command processing.
+- [x] Added pure-Rust ARK-ASR Hub downloader and `ort` session loader (`download` command).
 - [ ] Implement push-to-talk and VAD trigger mechanism.
 
-Next: wire capture chunks into VAD/ASR; model format and push-to-talk trigger remain to be selected.
+Next: implement ARK-ASR Whisper-128 log-mel preprocessing and decoder KV-cache loop, then connect microphone/VAD output to bridge commits.
