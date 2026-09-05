@@ -112,6 +112,7 @@ bool ClientSession::onReadable() {
         }
 
         if (line.rfind("COMMIT ", 0) == 0) {
+            FCITX_INFO() << "fcitx5-asr: COMMIT request: " << line.substr(7);
             addon_->commitText(line.substr(7));
         } else if (line.rfind("PREEDIT ", 0) == 0) {
             addon_->setPreedit(line.substr(8));
@@ -217,10 +218,17 @@ void AsrAddon::commitText(const std::string &text) {
     if (text.empty()) {
         return;
     }
-    auto *ic = instance_->mostRecentInputContext();
+    // Prefer the actual focused context; mostRecentInputContext() may be a
+    // dummy context when no focus group is active.
+    auto *ic = instance_->inputContextManager().lastFocusedInputContext();
     if (!ic) {
+        ic = instance_->mostRecentInputContext();
+    }
+    if (!ic) {
+        FCITX_WARN() << "fcitx5-asr: COMMIT dropped: no recent input context";
         return;
     }
+    FCITX_INFO() << "fcitx5-asr: committing to input context";
     ic->inputPanel().reset();
     ic->updatePreedit();
     ic->commitString(text);
