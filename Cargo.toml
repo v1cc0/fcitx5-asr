@@ -7,7 +7,6 @@ authors = ["v1cc0 <vc@v1cc0.eu.org>"]
 
 [dependencies]
 cpal = "0.18.2"
-rubato = "5.0.0"
 ort = "2.0.0-rc.13"
 tokenizers = { version = "0.23.2", default-features = false, features = [
   "onig",
