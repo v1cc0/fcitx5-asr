@@ -51,6 +51,7 @@ impl IpcClient {
         let cmd = format!("COMMIT {}\n", text.trim());
         self.stream.get_mut().write_all(cmd.as_bytes()).await?;
         self.stream.get_mut().flush().await?;
+        self.expect_ok().await?;
         debug!("Sent commit: {:?}", text);
         Ok(())
     }
@@ -59,6 +60,7 @@ impl IpcClient {
         let cmd = format!("PREEDIT {}\n", text.trim());
         self.stream.get_mut().write_all(cmd.as_bytes()).await?;
         self.stream.get_mut().flush().await?;
+        self.expect_ok().await?;
         debug!("Sent preedit: {:?}", text);
         Ok(())
     }
@@ -66,7 +68,15 @@ impl IpcClient {
     pub async fn clear(&mut self) -> Result<()> {
         self.stream.get_mut().write_all(b"CLEAR\n").await?;
         self.stream.get_mut().flush().await?;
+        self.expect_ok().await?;
         debug!("Sent clear");
+        Ok(())
+    }
+
+    async fn expect_ok(&mut self) -> Result<()> {
+        let mut response = String::new();
+        self.stream.read_line(&mut response).await?;
+        anyhow::ensure!(response.trim() == "OK", "bridge rejected command: {:?}", response.trim());
         Ok(())
     }
 

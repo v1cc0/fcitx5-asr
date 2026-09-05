@@ -114,10 +114,13 @@ bool ClientSession::onReadable() {
         if (line.rfind("COMMIT ", 0) == 0) {
             FCITX_INFO() << "fcitx5-asr: COMMIT request: " << line.substr(7);
             addon_->commitText(line.substr(7));
+            (void)write(fd_, "OK\n", 3);
         } else if (line.rfind("PREEDIT ", 0) == 0) {
             addon_->setPreedit(line.substr(8));
+            (void)write(fd_, "OK\n", 3);
         } else if (line == "CLEAR") {
             addon_->clearPreedit();
+            (void)write(fd_, "OK\n", 3);
         } else if (line == "PING") {
             const char pong[] = "PONG\n";
             (void)write(fd_, pong, sizeof(pong) - 1);
