@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
+use tokio::time::{Duration, timeout};
 use tracing::debug;
 
 pub fn default_socket_path() -> PathBuf {
@@ -75,8 +76,13 @@ impl IpcClient {
 
     async fn expect_ok(&mut self) -> Result<()> {
         let mut response = String::new();
-        self.stream.read_line(&mut response).await?;
-        anyhow::ensure!(response.trim() == "OK", "bridge rejected command: {:?}", response.trim());
+        match timeout(Duration::from_millis(500), self.stream.read_line(&mut response)).await {
+            Ok(result) => {
+                result?;
+                anyhow::ensure!(response.trim() == "OK", "bridge rejected command: {:?}", response.trim());
+            }
+            Err(_) => tracing::warn!("bridge acknowledgement timed out; command may still be processed"),
+        }
         Ok(())
     }
 
