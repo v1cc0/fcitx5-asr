@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use hf_hub::{api::sync::Api, Repo, RepoType};
 use ort::session::Session;
 use std::path::PathBuf;
+use ndarray::Array3;
 
 const REPO: &str = "OpenVoiceOS/ARK-ASR-0.6B-onnx";
 
@@ -14,6 +15,17 @@ pub struct ArkModel {
 }
 
 impl ArkModel {
+    pub fn encode(&mut self, features: &[Vec<f32>]) -> Result<Vec<f32>> {
+        anyhow::ensure!(features.len() == 128 && !features[0].is_empty(), "expected [128][frames] features");
+        let frames = features[0].len();
+        let mut data = Vec::with_capacity(128 * frames);
+        for row in features { anyhow::ensure!(row.len() == frames, "inconsistent feature frame count"); data.extend_from_slice(row); }
+        let input = ort::value::Tensor::from_array(Array3::from_shape_vec((1, 128, frames), data)?)?;
+        let outputs = self.encoder.run(ort::inputs!["input_features" => input])?;
+        let (_, embeds) = outputs[0].try_extract_tensor::<f32>()?;
+        Ok(embeds.to_vec())
+    }
+
     pub fn download_and_load(int8: bool) -> Result<Self> {
         let api = Api::new().context("initializing Hugging Face Hub client")?;
         let repo = api.repo(Repo::with_revision(REPO.to_owned(), RepoType::Model, "main".to_owned()));
