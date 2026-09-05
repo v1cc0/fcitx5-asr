@@ -31,6 +31,7 @@
 - [x] Implement initial audio capture & resampling pipeline (`cpal`; minimal stdlib resampler; unused `rubato` removed).
 - [ ] Implement ONNX runtime inference engine & tokenizer decoding (`ort` + `tokenizers`).
 - [x] Implement IPC bridge / Fcitx5 integration (Unix socket addon plus Rust CLI commands).
+- [x] Fixed IPC EOF race so short-lived CLI commands are processed reliably.
 - [ ] Implement push-to-talk and VAD trigger mechanism.
 
 Next: wire capture chunks into VAD/ASR; model format and push-to-talk trigger remain to be selected.

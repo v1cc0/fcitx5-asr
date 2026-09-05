@@ -1,3 +1,8 @@
 # Incident Records
 
-No incidents recorded yet.
+## 2026-09-06 IPC 命令静默丢失
+
+- **现象**：`fcitx5-asr ping` 正常，但 `commit`/`preedit` 无效果。
+- **原因**：Rust 客户端发送后立即关闭 socket；C++ addon 的读取循环在收到 EOF 时直接返回，尚未解析已缓存的完整行。
+- **修复**：EOF 只标记连接关闭，先继续处理 `readBuf_` 中的命令，再返回关闭状态。
+- **预防**：协议处理必须在 EOF 路径也消费已读取缓冲；新增命令应覆盖“写入后立即断开”的客户端行为。
