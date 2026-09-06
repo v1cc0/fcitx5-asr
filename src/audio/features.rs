@@ -13,10 +13,17 @@ pub fn whisper_log_mel(samples: &[f32]) -> Vec<Vec<f32>> {
     let filters = mel_filters();
     let mut out = vec![vec![0.0; frames]; MEL];
     let mut buf = vec![Complex::default(); NFFT];
+    let mut waveform = vec![0.0f32; 480_000];
+    waveform[..samples.len().min(480_000)].copy_from_slice(&samples[..samples.len().min(480_000)]);
+    let mut padded = vec![0.0f32; 480_400];
+    padded[..200].copy_from_slice(&waveform[1..201].iter().rev().copied().collect::<Vec<_>>());
+    padded[200..480_200].copy_from_slice(&waveform);
+    padded[480_200..].copy_from_slice(&waveform[479_800..480_000].iter().rev().copied().collect::<Vec<_>>());
     for frame in 0..frames {
         for (i, z) in buf.iter_mut().enumerate() {
-            let s = samples.get(frame * HOP + i).copied().unwrap_or(0.0);
-            *z = Complex::new(s * (std::f32::consts::PI * (i as f32 + 0.5) / NFFT as f32).sin().powi(2), 0.0);
+            let s = padded[frame * HOP + i];
+            let w = 0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / (NFFT - 1) as f32).cos();
+            *z = Complex::new(s * w, 0.0);
         }
         fft.process(&mut buf);
         let power: Vec<f32> = buf[..=NFFT / 2].iter().map(|z| z.norm_sqr()).collect();
