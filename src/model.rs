@@ -32,6 +32,23 @@ pub struct ArkModel {
 pub type KvCache = Vec<DynValue>;
 
 impl ArkModel {
+    pub fn transcribe(&mut self, samples: &[f32], max_tokens: usize) -> Result<String> {
+        let features = crate::audio::features::whisper_log_mel(samples);
+        let (audio, frames) = self.encode_with_shape(&features)?;
+        let (prompt, seq) = self.compose_prompt(&audio, frames)?;
+        let (logits, mut cache) = self.decode_prompt_with_cache(&prompt, seq)?;
+        let mut token = self.greedy_token(&logits[logits.len().saturating_sub(163_958)..]);
+        let mut ids = Vec::new();
+        for _ in 0..max_tokens {
+            if self.settings.eos_token_ids.contains(&token) { break; }
+            ids.push(token);
+            let embed = self.embed(&[token])?;
+            let logits = self.decode_next(&embed, seq + ids.len() - 1, &mut cache)?;
+            token = self.greedy_token(&logits[logits.len().saturating_sub(163_958)..]);
+        }
+        Ok(self.decode_tokens(&ids).trim().to_owned())
+    }
+
     pub fn embed(&mut self, ids: &[i64]) -> Result<Vec<f32>> {
         let input = ort::value::Tensor::from_array(Array2::from_shape_vec((1, ids.len()), ids.to_vec())?)?;
         let outputs = self.embed_tokens.run(ort::inputs!["input_ids" => input])?;
