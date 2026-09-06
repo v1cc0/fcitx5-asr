@@ -191,6 +191,7 @@ impl ArkModel {
     }
 }
 
+
 fn materialize(path: &std::path::Path, data: Option<&std::path::Path>) -> Result<PathBuf> {
     let dir = std::env::temp_dir().join("fcitx5-asr-model");
     fs::create_dir_all(&dir)?;
