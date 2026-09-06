@@ -57,6 +57,7 @@
 - [x] Confirmed microphone/RNNoise input reaches inference; added diagnostics for empty model results.
 - [x] Added top-k token diagnostics for investigating repeated EOS outputs.
 - [x] Logged ARK first-token top-k scores during live `listen` inference.
+- [x] Switched first-token diagnostics to direct stdout so live runs always show logits ranking.
 - [x] Fixed Whisper feature padding to ARK's fixed 30-second/3000-frame encoder window; int8 encoder probe succeeds (336000 values).
 - [ ] Implement push-to-talk and VAD trigger mechanism.
 
