@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use hf_hub::{api::sync::Api, Repo, RepoType};
 use ort::session::Session;
 use std::path::PathBuf;
+use std::fs;
 use ndarray::Array3;
 use ndarray::Array2;
 use ndarray::Array4;
@@ -148,9 +149,15 @@ impl ArkModel {
         let api = Api::new().context("initializing Hugging Face Hub client")?;
         let repo = api.repo(Repo::with_revision(REPO.to_owned(), RepoType::Model, "main".to_owned()));
         let suffix = if int8 { ".int8.onnx" } else { ".onnx" };
-        let encoder_path = repo.get(&format!("encoder{suffix}"))?;
-        let decoder_path = repo.get(&format!("decoder{suffix}"))?;
-        let embed_path = repo.get(&format!("embed_tokens{suffix}"))?;
+        let encoder_src = repo.get(&format!("encoder{suffix}"))?;
+        let decoder_src = repo.get(&format!("decoder{suffix}"))?;
+        let embed_src = repo.get(&format!("embed_tokens{suffix}"))?;
+        let encoder_data = repo.get(&format!("encoder{suffix}.data")).ok();
+        let decoder_data = repo.get(&format!("decoder{suffix}.data")).ok();
+        let embed_data = repo.get(&format!("embed_tokens{suffix}.data")).ok();
+        let encoder_path = materialize(&encoder_src, encoder_data.as_deref())?;
+        let decoder_path = materialize(&decoder_src, decoder_data.as_deref())?;
+        let embed_path = materialize(&embed_src, embed_data.as_deref())?;
         let vocab = repo.get("vocab.json")?;
         let config = repo.get("config.json")?;
         let settings: ArkConfig = serde_json::from_slice(&std::fs::read(&config)?)?;
@@ -182,4 +189,17 @@ impl ArkModel {
         }
         best.1 as i64
     }
+}
+
+fn materialize(path: &std::path::Path, data: Option<&std::path::Path>) -> Result<PathBuf> {
+    let dir = std::env::temp_dir().join("fcitx5-asr-model");
+    fs::create_dir_all(&dir)?;
+    let dst = dir.join(path.file_name().context("invalid model filename")?);
+    if !dst.exists() { fs::copy(path, &dst)?; }
+    let data_name = format!("{}.data", path.file_name().unwrap().to_string_lossy());
+    if let Some(data) = data {
+        let data_dst = dir.join(&data_name);
+        if !data_dst.exists() { fs::copy(data, data_dst)?; }
+    }
+    Ok(dst)
 }
