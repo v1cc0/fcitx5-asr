@@ -46,6 +46,7 @@
 - [x] Added ARK audio/prompt embedding composition for decoder input.
 - [x] Added last-position logits extraction and suppression-aware next-token probe (silent prompt returns EOS).
 - [x] Extracted all 48 ARK `present.*` tensors after prompt pass for incremental KV-cache decoding.
+- [x] Added single-token decoder step API that feeds prior KV cache and refreshes all 48 tensors.
 - [x] Fixed Whisper feature padding to ARK's fixed 30-second/3000-frame encoder window; int8 encoder probe succeeds (336000 values).
 - [ ] Implement push-to-talk and VAD trigger mechanism.
 

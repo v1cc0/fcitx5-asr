@@ -75,6 +75,23 @@ impl ArkModel {
         Ok((logits, cache))
     }
 
+    pub fn decode_next(&mut self, embed: &[f32], position: usize, cache: &mut KvCache) -> Result<Vec<f32>> {
+        anyhow::ensure!(embed.len() == 896 && cache.len() == 48, "invalid decoder step inputs");
+        let mut inputs = ort::inputs![
+            "inputs_embeds" => ort::value::Tensor::from_array(Array3::from_shape_vec((1, 1, 896), embed.to_vec())?)?,
+            "attn_bias" => ort::value::Tensor::from_array(Array4::from_shape_vec((1, 1, 1, position + 1), vec![0.0f32; position + 1])?)?,
+            "position_ids" => ort::value::Tensor::from_array(Array2::from_shape_vec((1, 1), vec![position as i64])?)?,
+        ];
+        for layer in 0..24 {
+            inputs.push((format!("past_key_values.{layer}.key").into(), (&cache[layer * 2]).into()));
+            inputs.push((format!("past_key_values.{layer}.value").into(), (&cache[layer * 2 + 1]).into()));
+        }
+        let mut outputs = self.decoder.run(inputs)?;
+        let logits = outputs[0].try_extract_tensor::<f32>()?.1.to_vec();
+        *cache = (0..48).filter_map(|i| outputs.remove(format!("present.{}.{}", i / 2, if i % 2 == 0 { "key" } else { "value" }))).collect();
+        Ok(logits)
+    }
+
     pub fn prompt_next_token(&mut self, embeds: &[f32], tokens: usize) -> Result<i64> {
         let logits = self.decode_prompt(embeds, tokens)?;
         let vocab = 163_958;
