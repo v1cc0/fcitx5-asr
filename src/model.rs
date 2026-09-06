@@ -4,6 +4,7 @@ use ort::session::Session;
 use std::path::PathBuf;
 use ndarray::Array3;
 use ndarray::Array2;
+use ndarray::Array4;
 use serde::Deserialize;
 use std::collections::HashMap;
 
@@ -37,6 +38,21 @@ impl ArkModel {
     /// Allocate the decoder's 24-layer empty KV cache (past length zero).
     pub fn empty_kv() -> Vec<ort::value::Tensor<f32>> {
         (0..48).map(|_| ort::value::Tensor::from_array((vec![1usize, 2, 0, 64], Vec::<f32>::new())).unwrap()).collect()
+    }
+
+    pub fn decode_prompt(&mut self, embeds: &[f32], tokens: usize) -> Result<Vec<f32>> {
+        let mut inputs = ort::inputs![
+            "inputs_embeds" => ort::value::Tensor::from_array(Array3::from_shape_vec((1, tokens, 896), embeds.to_vec())?)?,
+            "attn_bias" => ort::value::Tensor::from_array(Array4::from_shape_vec((1, 1, tokens, tokens), vec![0.0; tokens * tokens])?)?,
+            "position_ids" => ort::value::Tensor::from_array(Array2::from_shape_vec((1, tokens), (0..tokens as i64).collect())?)?,
+        ];
+        let kv = Self::empty_kv();
+        for layer in 0..24 {
+            inputs.push((format!("past_key_values.{layer}.key").into(), kv[layer * 2].clone().upcast().into()));
+            inputs.push((format!("past_key_values.{layer}.value").into(), kv[layer * 2 + 1].clone().upcast().into()));
+        }
+        let outputs = self.decoder.run(inputs)?;
+        Ok(outputs[0].try_extract_tensor::<f32>()?.1.to_vec())
     }
 
     pub fn encode(&mut self, features: &[Vec<f32>]) -> Result<Vec<f32>> {

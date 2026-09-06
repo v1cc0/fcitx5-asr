@@ -23,6 +23,7 @@ enum Command {
     Download { #[arg(long)] int8: bool },
     Inspect { #[arg(long)] int8: bool },
     Probe { #[arg(long)] int8: bool },
+    Prompt { #[arg(long)] int8: bool },
     Listen,
 }
 
@@ -48,6 +49,13 @@ async fn main() -> anyhow::Result<()> {
             let features = audio::features::whisper_log_mel(&vec![0.0; 16_000]);
             let embeds = model.encode(&features)?;
             println!("encoder probe: {} values", embeds.len());
+        }
+        Command::Prompt { int8 } => {
+            let mut model = model::ArkModel::download_and_load(int8)?;
+            let mut ids = model.settings.prompt_prefix_ids.clone();
+            ids.extend_from_slice(&model.settings.prompt_suffix_ids);
+            let embeds = model.embed(&ids)?;
+            println!("prompt embedding: {} values ({} tokens)", embeds.len(), ids.len());
         }
         Command::Listen => listen().await?,
     }
