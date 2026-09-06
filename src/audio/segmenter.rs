@@ -13,7 +13,8 @@ impl SpeechSegmenter {
             self.silence_chunks += 1;
             if self.silence_chunks >= self.hangover {
                 self.silence_chunks = 0;
-                return Some(std::mem::take(&mut self.active));
+                if self.active.len() >= 12_800 { return Some(std::mem::take(&mut self.active)); }
+                self.active.clear();
             }
         }
         None

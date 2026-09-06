@@ -37,8 +37,11 @@ pub type KvCache = Vec<DynValue>;
 impl ArkModel {
     pub fn transcribe(&mut self, samples: &[f32], max_tokens: usize) -> Result<String> {
         let features = crate::audio::features::whisper_log_mel(samples);
-        let (audio, frames) = self.encode_with_shape(&features)?;
-        let (prompt, seq) = self.compose_prompt(&audio, frames)?;
+        let (audio, _) = self.encode_with_shape(&features)?;
+        // ARK merges two Whisper frames then groups four merged frames per audio token.
+        let audio_tokens = (((samples.len() / 160 + 1) / 2) / 4).max(1);
+        let audio_tokens = audio_tokens.min(audio.len() / 896);
+        let (prompt, seq) = self.compose_prompt(&audio[..audio_tokens * 896], audio_tokens)?;
         let (logits, mut cache) = self.decode_prompt_with_cache(&prompt, seq)?;
         let first = &logits[logits.len().saturating_sub(163_958)..];
         let mut token = first.iter().enumerate().filter(|(i, _)| !self.settings.suppress_token_ids.contains(&(*i as i64)) && !self.settings.eos_token_ids.contains(&(*i as i64))).max_by(|a,b| a.1.total_cmp(b.1)).map(|(i,_)| i as i64).unwrap_or_else(|| self.greedy_token(first));
