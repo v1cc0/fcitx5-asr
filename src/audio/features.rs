@@ -39,10 +39,16 @@ fn mel_filters() -> Vec<Vec<f32>> {
     let mel = |f: f32| 2595.0 * (1.0 + f / 700.0).log10();
     let lo = mel(0.0); let hi = mel(8000.0);
     let bins: Vec<usize> = (0..MEL + 2).map(|i| ((NFFT as f32 + 1.0) * hz(lo + (hi-lo)*i as f32/(MEL+1) as f32) / 16000.0).floor() as usize).collect();
-    (0..MEL).map(|m| (0..=NFFT/2).map(|k| {
+    (0..MEL).map(|m| {
+        let mut filter: Vec<f32> = (0..=NFFT/2).map(|k| {
         let (a,b,c) = (bins[m], bins[m+1], bins[m+2]);
         if k < a || k > c { 0.0 } else if k <= b { (k-a) as f32 / (b-a).max(1) as f32 } else { (c-k) as f32 / (c-b).max(1) as f32 }
-    }).collect()).collect()
+        }).collect();
+        // librosa/Whisper uses Slaney area normalization for each band.
+        let width = (hz(lo + (hi-lo)*(m+2) as f32/(MEL+1) as f32) - hz(lo + (hi-lo)*m as f32/(MEL+1) as f32)).max(1.0);
+        for w in &mut filter { *w *= 2.0 / width; }
+        filter
+    }).collect()
 }
 
 #[cfg(test)]

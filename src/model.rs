@@ -47,9 +47,12 @@ impl ArkModel {
         let mut token = first.iter().enumerate().filter(|(i, _)| !self.settings.suppress_token_ids.contains(&(*i as i64)) && !self.settings.eos_token_ids.contains(&(*i as i64))).max_by(|a,b| a.1.total_cmp(b.1)).map(|(i,_)| i as i64).unwrap_or_else(|| self.greedy_token(first));
         println!("ARK first token: {token}, top={:?}", self.top_tokens(first, 5));
         let mut ids = Vec::new();
+        let mut last_token = None;
+        let mut repeats = 0;
         for _ in 0..max_tokens {
             if self.settings.eos_token_ids.contains(&token) { break; }
             ids.push(token);
+            if last_token == Some(token) { repeats += 1; if repeats >= 4 { break; } } else { repeats = 0; last_token = Some(token); }
             let embed = self.embed(&[token])?;
             let logits = self.decode_next(&embed, seq + ids.len() - 1, &mut cache)?;
             token = self.greedy_token(&logits[logits.len().saturating_sub(163_958)..]);
