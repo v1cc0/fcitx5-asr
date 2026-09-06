@@ -6,7 +6,8 @@ const MEL: usize = 128;
 
 /// Whisper-compatible 128-bin log-mel features, shaped `[mel][frame]`.
 pub fn whisper_log_mel(samples: &[f32]) -> Vec<Vec<f32>> {
-    let frames = samples.len().div_ceil(HOP).max(1);
+    // ARK exports the Whisper encoder with a fixed 30-second (3000-frame) window.
+    let frames = 3000;
     let mut planner = FftPlanner::new();
     let fft = planner.plan_fft_forward(NFFT);
     let filters = mel_filters();

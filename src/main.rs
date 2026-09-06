@@ -22,6 +22,7 @@ enum Command {
     /// Download and validate ARK-ASR ONNX files into the Hugging Face cache.
     Download { #[arg(long)] int8: bool },
     Inspect { #[arg(long)] int8: bool },
+    Probe { #[arg(long)] int8: bool },
     Listen,
 }
 
@@ -41,6 +42,12 @@ async fn main() -> anyhow::Result<()> {
             let model = model::ArkModel::download_and_load(int8)?;
             for io in model.decoder.inputs() { println!("input {}: {:?}", io.name(), io.dtype()); }
             for io in model.decoder.outputs() { println!("output {}: {:?}", io.name(), io.dtype()); }
+        }
+        Command::Probe { int8 } => {
+            let mut model = model::ArkModel::download_and_load(int8)?;
+            let features = audio::features::whisper_log_mel(&vec![0.0; 16_000]);
+            let embeds = model.encode(&features)?;
+            println!("encoder probe: {} values", embeds.len());
         }
         Command::Listen => listen().await?,
     }
