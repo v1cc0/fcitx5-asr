@@ -43,7 +43,7 @@ impl ArkModel {
     pub fn decode_prompt(&mut self, embeds: &[f32], tokens: usize) -> Result<Vec<f32>> {
         let mut inputs = ort::inputs![
             "inputs_embeds" => ort::value::Tensor::from_array(Array3::from_shape_vec((1, tokens, 896), embeds.to_vec())?)?,
-            "attn_bias" => ort::value::Tensor::from_array(Array4::from_shape_vec((1, 1, tokens, tokens), vec![0.0; tokens * tokens])?)?,
+            "attn_bias" => ort::value::Tensor::from_array(Array4::from_shape_vec((1, 1, tokens, tokens), vec![0.0f32; tokens * tokens])?)?,
             "position_ids" => ort::value::Tensor::from_array(Array2::from_shape_vec((1, tokens), (0..tokens as i64).collect())?)?,
         ];
         let kv = Self::empty_kv();

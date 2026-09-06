@@ -41,6 +41,7 @@
 - [x] Added `inspect` command to enumerate ARK decoder KV-cache contract (24 layers, 896 hidden, 163958 vocab).
 - [x] Parsed ARK prompt/EOS/suppression config and added byte-level vocabulary decoding helpers.
 - [x] Added ARK `embed_tokens` invocation and typed empty 24-layer KV cache allocation.
+- [x] Implemented and validated ARK decoder prompt pass with zero KV cache (1,639,580 logits for 10 tokens).
 - [x] Fixed Whisper feature padding to ARK's fixed 30-second/3000-frame encoder window; int8 encoder probe succeeds (336000 values).
 - [ ] Implement push-to-talk and VAD trigger mechanism.
 
