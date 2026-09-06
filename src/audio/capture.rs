@@ -34,8 +34,8 @@ impl AudioCapture {
     }
 
     pub fn receiver(&self) -> &Receiver<Vec<f32>> { &self.receiver }
-    pub fn pause(&self) -> Result<()> { self.stream.pause().context("pausing input stream") }
-    pub fn resume(&self) -> Result<()> { self.stream.play().context("resuming input stream") }
+    pub fn pause(&self) { let _ = self.stream.pause(); }
+    pub fn resume(&self) { let _ = self.stream.play(); }
 }
 
 fn build<T: cpal::SizedSample, F: Fn(T) -> f32 + Send + 'static>(

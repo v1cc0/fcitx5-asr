@@ -85,11 +85,11 @@ async fn listen(int8: bool) -> anyhow::Result<()> {
         }
         if let Some(samples) = segmenter.push(&samples) {
             println!("segment detected: {:.2}s; running ARK...", samples.len() as f32 / 16_000.0);
-            capture.pause()?;
+            capture.pause();
             while capture.receiver().try_recv().is_ok() {}
             let started = std::time::Instant::now();
             let result = tokio::task::block_in_place(|| model.transcribe(&samples, 16));
-            capture.resume()?;
+            capture.resume();
             let text = result?;
             println!("inference finished in {:.1}s", started.elapsed().as_secs_f32());
             if !text.is_empty() { println!("{text}"); client.commit(&text).await?; }

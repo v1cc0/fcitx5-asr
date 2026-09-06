@@ -52,6 +52,7 @@
 - [x] Added periodic microphone RMS diagnostics to verify capture and tune speech gate.
 - [x] Added segment-detected progress output before expensive ARK inference.
 - [x] Paused and drained microphone capture during bounded (16-token) inference to prevent stale segments.
+- [x] Made stream pause/resume best-effort for backends that do not support pausing.
 - [x] Fixed Whisper feature padding to ARK's fixed 30-second/3000-frame encoder window; int8 encoder probe succeeds (336000 values).
 - [ ] Implement push-to-talk and VAD trigger mechanism.
 
