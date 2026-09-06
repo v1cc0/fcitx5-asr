@@ -21,6 +21,7 @@ enum Command {
     Clear,
     /// Download and validate ARK-ASR ONNX files into the Hugging Face cache.
     Download { #[arg(long)] int8: bool },
+    Inspect { #[arg(long)] int8: bool },
     Listen,
 }
 
@@ -35,6 +36,11 @@ async fn main() -> anyhow::Result<()> {
         Command::Download { int8 } => {
             let model = model::ArkModel::download_and_load(int8)?;
             println!("ARK-ASR loaded (config: {})", model.config.display());
+        }
+        Command::Inspect { int8 } => {
+            let model = model::ArkModel::download_and_load(int8)?;
+            for io in model.decoder.inputs() { println!("input {}: {:?}", io.name(), io.dtype()); }
+            for io in model.decoder.outputs() { println!("output {}: {:?}", io.name(), io.dtype()); }
         }
         Command::Listen => listen().await?,
     }

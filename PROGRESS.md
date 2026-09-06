@@ -38,6 +38,7 @@
 - [x] Added `listen` microphone mode with resampling and RMS speech segmentation.
 - [x] Added Rust Whisper-128 log-mel feature extraction with rustfft.
 - [x] Added ARK encoder invocation with `[1,128,frames]` tensors via `ort`.
+- [x] Added `inspect` command to enumerate ARK decoder KV-cache contract (24 layers, 896 hidden, 163958 vocab).
 - [ ] Implement push-to-talk and VAD trigger mechanism.
 
 Next: implement ARK-ASR Whisper-128 log-mel preprocessing and decoder KV-cache loop, then replace segment logging with bridge commits.
