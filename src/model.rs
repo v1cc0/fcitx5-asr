@@ -39,6 +39,7 @@ impl ArkModel {
         let (prompt, seq) = self.compose_prompt(&audio, frames)?;
         let (logits, mut cache) = self.decode_prompt_with_cache(&prompt, seq)?;
         let mut token = self.greedy_token(&logits[logits.len().saturating_sub(163_958)..]);
+        tracing::info!(token, top = ?self.top_tokens(&logits[logits.len().saturating_sub(163_958)..], 5), "ARK first token");
         let mut ids = Vec::new();
         for _ in 0..max_tokens {
             if self.settings.eos_token_ids.contains(&token) { break; }
