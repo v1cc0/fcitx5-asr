@@ -96,4 +96,12 @@ impl ArkModel {
     pub fn decode_tokens(&self, ids: &[i64]) -> String {
         ids.iter().filter_map(|id| self.token_for_id(*id)).map(|s| s.replace('Ġ', " ")).collect()
     }
+
+    pub fn greedy_token(&self, logits: &[f32]) -> i64 {
+        let mut best = (f32::NEG_INFINITY, 0usize);
+        for (id, &score) in logits.iter().enumerate() {
+            if !self.settings.suppress_token_ids.contains(&(id as i64)) && score > best.0 { best = (score, id); }
+        }
+        best.1 as i64
+    }
 }
