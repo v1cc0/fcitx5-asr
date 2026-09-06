@@ -36,7 +36,7 @@ impl ArkModel {
 
     /// Allocate the decoder's 24-layer empty KV cache (past length zero).
     pub fn empty_kv() -> Vec<ort::value::Tensor<f32>> {
-        (0..48).map(|_| ort::value::Tensor::from_array((vec![1, 2, 0, 64], Vec::<f32>::new()).into()).unwrap()).collect()
+        (0..48).map(|_| ort::value::Tensor::from_array((vec![1usize, 2, 0, 64], Vec::<f32>::new())).unwrap()).collect()
     }
 
     pub fn encode(&mut self, features: &[Vec<f32>]) -> Result<Vec<f32>> {
