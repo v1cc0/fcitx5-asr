@@ -24,7 +24,7 @@ enum Command {
     Inspect { #[arg(long)] int8: bool },
     Probe { #[arg(long)] int8: bool },
     Prompt { #[arg(long)] int8: bool },
-    Listen,
+    Listen { #[arg(long)] int8: bool },
 }
 
 #[tokio::main]
@@ -62,12 +62,14 @@ async fn main() -> anyhow::Result<()> {
             let next = model.greedy_token(&next_logits[next_logits.len() - 163_958..]);
             println!("prompt next tokens: {token}, {next}; KV tensors: {}", cache.len());
         }
-        Command::Listen => listen().await?,
+        Command::Listen { int8 } => listen(int8).await?,
     }
     Ok(())
 }
 
-async fn listen() -> anyhow::Result<()> {
+async fn listen(int8: bool) -> anyhow::Result<()> {
+    let mut model = model::ArkModel::download_and_load(int8)?;
+    let mut client = IpcClient::connect().await?;
     let capture = AudioCapture::default()?;
     let mut resampler = AudioResampler::new(capture.sample_rate);
     let mut segmenter = SpeechSegmenter::new(0.01, 12);
@@ -75,7 +77,8 @@ async fn listen() -> anyhow::Result<()> {
     loop {
         let chunk = tokio::task::block_in_place(|| capture.receiver().recv())?;
         if let Some(samples) = segmenter.push(&resampler.process(&chunk)) {
-            println!("speech segment: {:.2}s", samples.len() as f32 / 16_000.0);
+            let text = tokio::task::block_in_place(|| model.transcribe(&samples, 64))?;
+            if !text.is_empty() { println!("{text}"); client.commit(&text).await?; }
         }
     }
 }
