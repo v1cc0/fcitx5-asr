@@ -3,6 +3,7 @@ use hf_hub::{api::sync::Api, Repo, RepoType};
 use ort::session::Session;
 use std::path::PathBuf;
 use ndarray::Array3;
+use ndarray::Array2;
 use serde::Deserialize;
 use std::collections::HashMap;
 
@@ -27,6 +28,17 @@ pub struct ArkModel {
 }
 
 impl ArkModel {
+    pub fn embed(&mut self, ids: &[i64]) -> Result<Vec<f32>> {
+        let input = ort::value::Tensor::from_array(Array2::from_shape_vec((1, ids.len()), ids.to_vec())?)?;
+        let outputs = self.embed_tokens.run(ort::inputs!["input_ids" => input])?;
+        Ok(outputs[0].try_extract_tensor::<f32>()?.1.to_vec())
+    }
+
+    /// Allocate the decoder's 24-layer empty KV cache (past length zero).
+    pub fn empty_kv() -> Vec<ort::value::Tensor<f32>> {
+        (0..48).map(|_| ort::value::Tensor::from_array((vec![1, 2, 0, 64], Vec::<f32>::new()).into()).unwrap()).collect()
+    }
+
     pub fn encode(&mut self, features: &[Vec<f32>]) -> Result<Vec<f32>> {
         anyhow::ensure!(features.len() == 128 && !features[0].is_empty(), "expected [128][frames] features");
         let frames = features[0].len();
