@@ -55,6 +55,13 @@ impl ArkModel {
         Ok(outputs[0].try_extract_tensor::<f32>()?.1.to_vec())
     }
 
+    pub fn prompt_next_token(&mut self, embeds: &[f32], tokens: usize) -> Result<i64> {
+        let logits = self.decode_prompt(embeds, tokens)?;
+        let vocab = 163_958;
+        let last = logits.get(logits.len().saturating_sub(vocab)..).unwrap_or(&logits);
+        Ok(self.greedy_token(last))
+    }
+
     pub fn encode(&mut self, features: &[Vec<f32>]) -> Result<Vec<f32>> {
         Ok(self.encode_with_shape(features)?.0)
     }

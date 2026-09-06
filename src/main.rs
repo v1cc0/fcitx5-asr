@@ -55,8 +55,8 @@ async fn main() -> anyhow::Result<()> {
             let mut ids = model.settings.prompt_prefix_ids.clone();
             ids.extend_from_slice(&model.settings.prompt_suffix_ids);
             let embeds = model.embed(&ids)?;
-            let logits = model.decode_prompt(&embeds, ids.len())?;
-            println!("prompt pass: {} logits ({} tokens)", logits.len(), ids.len());
+            let token = model.prompt_next_token(&embeds, ids.len())?;
+            println!("prompt next token: {token}");
         }
         Command::Listen => listen().await?,
     }
