@@ -56,14 +56,31 @@ impl ArkModel {
     }
 
     pub fn encode(&mut self, features: &[Vec<f32>]) -> Result<Vec<f32>> {
+        Ok(self.encode_with_shape(features)?.0)
+    }
+
+    pub fn encode_with_shape(&mut self, features: &[Vec<f32>]) -> Result<(Vec<f32>, usize)> {
         anyhow::ensure!(features.len() == 128 && !features[0].is_empty(), "expected [128][frames] features");
         let frames = features[0].len();
         let mut data = Vec::with_capacity(128 * frames);
         for row in features { anyhow::ensure!(row.len() == frames, "inconsistent feature frame count"); data.extend_from_slice(row); }
         let input = ort::value::Tensor::from_array(Array3::from_shape_vec((1, 128, frames), data)?)?;
         let outputs = self.encoder.run(ort::inputs!["input_features" => input])?;
-        let (_, embeds) = outputs[0].try_extract_tensor::<f32>()?;
-        Ok(embeds.to_vec())
+        let (shape, embeds) = outputs[0].try_extract_tensor::<f32>()?;
+        Ok((embeds.to_vec(), *shape.get(1).unwrap_or(&0) as usize))
+    }
+
+    pub fn compose_prompt(&mut self, audio_embeds: &[f32], audio_frames: usize) -> Result<(Vec<f32>, usize)> {
+        anyhow::ensure!(audio_embeds.len() == audio_frames * 896, "invalid audio embedding shape");
+        let mut ids = self.settings.prompt_prefix_ids.clone();
+        ids.extend_from_slice(&self.settings.prompt_suffix_ids);
+        let text = self.embed(&ids)?;
+        let prefix_len = self.settings.prompt_prefix_ids.len() * 896;
+        let mut out = Vec::with_capacity(text.len() + audio_embeds.len());
+        out.extend_from_slice(&text[..prefix_len]);
+        out.extend_from_slice(audio_embeds);
+        out.extend_from_slice(&text[prefix_len..]);
+        Ok((out, ids.len() + audio_frames))
     }
 
     pub fn download_and_load(int8: bool) -> Result<Self> {
