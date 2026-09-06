@@ -9,6 +9,7 @@ use ndarray::Array4;
 use serde::Deserialize;
 use std::collections::HashMap;
 use ort::value::DynValue;
+use tokenizers::Tokenizer;
 
 #[derive(Debug, Deserialize)]
 pub struct ArkConfig {
@@ -28,6 +29,7 @@ pub struct ArkModel {
     pub config: PathBuf,
     pub settings: ArkConfig,
     vocab_map: HashMap<String, i64>,
+    tokenizer: Tokenizer,
 }
 
 pub type KvCache = Vec<DynValue>;
@@ -162,6 +164,8 @@ impl ArkModel {
         let embed_path = materialize(&embed_src, embed_data.as_deref())?;
         let vocab = repo.get("vocab.json")?;
         let config = repo.get("config.json")?;
+        let tok_repo = api.repo(Repo::with_revision("Audio8/ARK-ASR-0.6B".to_owned(), RepoType::Model, "main".to_owned()));
+        let tokenizer = Tokenizer::from_file(tok_repo.get("tokenizer.json")?).map_err(|e| anyhow::anyhow!(e))?;
         let settings: ArkConfig = serde_json::from_slice(&std::fs::read(&config)?)?;
         let vocab_map: HashMap<String, i64> = serde_json::from_slice(&std::fs::read(&vocab)?)?;
         ort::init().with_name("fcitx5-asr").commit();
@@ -173,6 +177,7 @@ impl ArkModel {
             config,
             settings,
             vocab_map,
+            tokenizer,
         })
     }
 
@@ -181,7 +186,7 @@ impl ArkModel {
     }
 
     pub fn decode_tokens(&self, ids: &[i64]) -> String {
-        ids.iter().filter_map(|id| self.token_for_id(*id)).map(|s| s.replace('Ġ', " ")).collect()
+        self.tokenizer.decode(&ids.iter().map(|id| *id as u32).collect::<Vec<_>>(), true).unwrap_or_default()
     }
 
     pub fn greedy_token(&self, logits: &[f32]) -> i64 {

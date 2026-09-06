@@ -58,6 +58,7 @@
 - [x] Added top-k token diagnostics for investigating repeated EOS outputs.
 - [x] Logged ARK first-token top-k scores during live `listen` inference.
 - [x] Switched first-token diagnostics to direct stdout so live runs always show logits ranking.
+- [x] Replaced naive byte-level token concatenation with ARK's Rust `tokenizers` tokenizer.json decoder.
 - [x] Restored causal decoder attention bias required by Qwen/ARK autoregressive decoding.
 - [x] Added first-token EOS suppression diagnostic to test whether ARK can continue generation.
 - [x] Fixed Whisper feature padding to ARK's fixed 30-second/3000-frame encoder window; int8 encoder probe succeeds (336000 values).
