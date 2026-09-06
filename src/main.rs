@@ -57,6 +57,7 @@ async fn main() -> anyhow::Result<()> {
             let embeds = model.embed(&ids)?;
             let (logits, mut cache) = model.decode_prompt_with_cache(&embeds, ids.len())?;
             let token = model.greedy_token(&logits[logits.len() - 163_958..]);
+            println!("top tokens: {:?}", model.top_tokens(&logits[logits.len() - 163_958..], 5));
             let next_embed = model.embed(&[token])?;
             let next_logits = model.decode_next(&next_embed, ids.len(), &mut cache)?;
             let next = model.greedy_token(&next_logits[next_logits.len() - 163_958..]);

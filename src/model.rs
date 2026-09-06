@@ -189,6 +189,12 @@ impl ArkModel {
         }
         best.1 as i64
     }
+
+    pub fn top_tokens(&self, logits: &[f32], n: usize) -> Vec<(i64, f32)> {
+        let mut v: Vec<_> = logits.iter().enumerate().filter(|(i, _)| !self.settings.suppress_token_ids.contains(&(*i as i64))).map(|(i, s)| (i as i64, *s)).collect();
+        v.sort_by(|a, b| b.1.total_cmp(&a.1));
+        v.truncate(n); v
+    }
 }
 
 
