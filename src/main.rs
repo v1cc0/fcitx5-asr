@@ -73,10 +73,17 @@ async fn listen(int8: bool) -> anyhow::Result<()> {
     let capture = AudioCapture::default()?;
     let mut resampler = AudioResampler::new(capture.sample_rate);
     let mut segmenter = SpeechSegmenter::new(0.01, 12);
+    let mut chunks = 0usize;
     println!("listening at {} Hz; Ctrl-C to stop", capture.sample_rate);
     loop {
         let chunk = tokio::task::block_in_place(|| capture.receiver().recv())?;
-        if let Some(samples) = segmenter.push(&resampler.process(&chunk)) {
+        let samples = resampler.process(&chunk);
+        chunks += 1;
+        if chunks % 100 == 0 {
+            let rms = (samples.iter().map(|x| x * x).sum::<f32>() / samples.len().max(1) as f32).sqrt();
+            println!("audio: {chunks} chunks, rms={rms:.4}");
+        }
+        if let Some(samples) = segmenter.push(&samples) {
             let text = tokio::task::block_in_place(|| model.transcribe(&samples, 64))?;
             if !text.is_empty() { println!("{text}"); client.commit(&text).await?; }
         }
