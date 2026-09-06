@@ -92,7 +92,13 @@ async fn listen(int8: bool) -> anyhow::Result<()> {
             capture.resume();
             let text = result?;
             println!("inference finished in {:.1}s", started.elapsed().as_secs_f32());
-            if !text.is_empty() { println!("{text}"); client.commit(&text).await?; }
+            if text.is_empty() {
+                println!("recognition result: <empty/EOS>");
+            } else {
+                println!("recognition result: {text}");
+                client.commit(&text).await?;
+                println!("committed to Fcitx5");
+            }
         }
     }
 }
