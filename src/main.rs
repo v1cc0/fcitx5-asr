@@ -84,6 +84,7 @@ async fn listen(int8: bool) -> anyhow::Result<()> {
             println!("audio: {chunks} chunks, rms={rms:.4}");
         }
         if let Some(samples) = segmenter.push(&samples) {
+            println!("segment detected: {:.2}s; running ARK...", samples.len() as f32 / 16_000.0);
             let text = tokio::task::block_in_place(|| model.transcribe(&samples, 64))?;
             if !text.is_empty() { println!("{text}"); client.commit(&text).await?; }
         }
