@@ -6,11 +6,15 @@
 #include <fcitx/addonfactory.h>
 #include <fcitx/addoninstance.h>
 #include <fcitx/addonmanager.h>
+#include <fcitx/event.h>
 #include <fcitx/inputcontext.h>
 #include <fcitx/inputpanel.h>
 #include <fcitx/instance.h>
 #include <fcitx/text.h>
 #include <fcitx-utils/event.h>
+#include <fcitx-utils/handlertable.h>
+#include <fcitx-utils/key.h>
+#include <fcitx-utils/keysym.h>
 #include <fcitx-utils/log.h>
 #include <fcitx-utils/textformatflags.h>
 
@@ -73,11 +77,14 @@ public:
 private:
     void initSocket();
     void handleNewConnection();
+    void onKeyEvent(KeyEvent &event);
+    bool sendPtt(bool down);
 
     Instance *instance_;
     int serverFd_ = -1;
     std::string socketPath_;
     std::unique_ptr<EventSourceIO> serverSource_;
+    std::unique_ptr<HandlerTableEntry<EventHandler>> keyWatch_;
     std::unordered_map<int, std::unique_ptr<ClientSession>> clients_;
 };
 
@@ -131,6 +138,9 @@ bool ClientSession::onReadable() {
 
 AsrAddon::AsrAddon(Instance *instance) : instance_(instance) {
     initSocket();
+    keyWatch_ = instance_->watchEvent(
+        EventType::InputContextKeyEvent, EventWatcherPhase::PreInputMethod,
+        [this](Event &event) { onKeyEvent(static_cast<KeyEvent &>(event)); });
 }
 
 AsrAddon::~AsrAddon() {
@@ -190,6 +200,40 @@ void AsrAddon::initSocket() {
         });
 
     FCITX_INFO() << "fcitx5-asr: Listening on " << socketPath_;
+}
+
+void AsrAddon::onKeyEvent(KeyEvent &event) {
+    const auto sym = event.rawKey().sym();
+    if (sym != FcitxKey_Control_R && sym != FcitxKey_Pause) {
+        return;
+    }
+    if (sendPtt(!event.isRelease())) {
+        event.filterAndAccept();
+    }
+}
+
+bool AsrAddon::sendPtt(bool down) {
+    std::string path;
+    const char *runtimeDir = getenv("XDG_RUNTIME_DIR");
+    if (runtimeDir && runtimeDir[0] != '\0') {
+        path = std::string(runtimeDir) + "/fcitx5-asr-ctl.sock";
+    } else {
+        path = "/tmp/fcitx5-asr-ctl-" + std::to_string(getuid()) + ".sock";
+    }
+
+    int fd = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) {
+        return false;
+    }
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, path.c_str(), sizeof(addr.sun_path) - 1);
+    const char *msg = down ? "DOWN" : "UP";
+    ssize_t n = sendto(fd, msg, strlen(msg), MSG_DONTWAIT,
+                       reinterpret_cast<struct sockaddr *>(&addr), sizeof(addr));
+    close(fd);
+    return n >= 0;
 }
 
 void AsrAddon::handleNewConnection() {

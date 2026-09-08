@@ -1,16 +1,26 @@
 mod audio;
 mod ipc;
 mod model;
+mod vad;
 
-use clap::{Parser, Subcommand};
-use ipc::IpcClient;
+use clap::{Parser, Subcommand, ValueEnum};
+use ipc::{IpcClient, PttEvent, PttSocket};
 use audio::{AudioCapture, AudioResampler};
-use audio::segmenter::SpeechSegmenter;
+use vad::{EnergyVad, PttGate};
 
 #[derive(Parser)]
 struct Args {
     #[command(subcommand)]
     command: Command,
+}
+
+#[derive(Clone, Copy, Default, ValueEnum)]
+enum Trigger {
+    /// Energy VAD: auto-cut on silence.
+    #[default]
+    Vad,
+    /// Hold Right Ctrl or Pause in a focused Fcitx5 window.
+    Ptt,
 }
 
 #[derive(Subcommand)]
@@ -24,7 +34,12 @@ enum Command {
     Inspect { #[arg(long)] int8: bool },
     Probe { #[arg(long)] int8: bool },
     Prompt { #[arg(long)] int8: bool },
-    Listen { #[arg(long)] int8: bool },
+    Listen {
+        #[arg(long)]
+        int8: bool,
+        #[arg(long, value_enum, default_value_t = Trigger::Vad)]
+        trigger: Trigger,
+    },
 }
 
 #[tokio::main]
@@ -63,19 +78,34 @@ async fn main() -> anyhow::Result<()> {
             let next = model.greedy_token(&next_logits[next_logits.len() - 163_958..]);
             println!("prompt next tokens: {token}, {next}; KV tensors: {}", cache.len());
         }
-        Command::Listen { int8 } => listen(int8).await?,
+        Command::Listen { int8, trigger } => listen(int8, trigger).await?,
     }
     Ok(())
 }
 
-async fn listen(int8: bool) -> anyhow::Result<()> {
+async fn listen(int8: bool, trigger: Trigger) -> anyhow::Result<()> {
     let mut model = model::ArkModel::download_and_load(int8)?;
     let mut client = IpcClient::connect().await?;
     let capture = AudioCapture::default()?;
     let mut resampler = AudioResampler::new(capture.sample_rate);
-    let mut segmenter = SpeechSegmenter::new(0.01, 12);
+    println!("listening at {} Hz ({}); Ctrl-C to stop", capture.sample_rate, match trigger {
+        Trigger::Vad => "VAD",
+        Trigger::Ptt => "PTT: hold Right Ctrl or Pause",
+    });
+    match trigger {
+        Trigger::Vad => listen_vad(&mut model, &mut client, &capture, &mut resampler).await,
+        Trigger::Ptt => listen_ptt(&mut model, &mut client, &capture, &mut resampler).await,
+    }
+}
+
+async fn listen_vad(
+    model: &mut model::ArkModel,
+    client: &mut IpcClient,
+    capture: &AudioCapture,
+    resampler: &mut AudioResampler,
+) -> anyhow::Result<()> {
+    let mut segmenter = EnergyVad::new(0.01, 12);
     let mut chunks = 0usize;
-    println!("listening at {} Hz; Ctrl-C to stop", capture.sample_rate);
     loop {
         let chunk = tokio::task::block_in_place(|| capture.receiver().recv())?;
         let samples = resampler.process(&chunk);
@@ -85,21 +115,68 @@ async fn listen(int8: bool) -> anyhow::Result<()> {
             println!("audio: {chunks} chunks, rms={rms:.4}");
         }
         if let Some(samples) = segmenter.push(&samples) {
-            println!("segment detected: {:.2}s; running ARK...", samples.len() as f32 / 16_000.0);
-            capture.pause();
-            while capture.receiver().try_recv().is_ok() {}
-            let started = std::time::Instant::now();
-            let result = tokio::task::block_in_place(|| model.transcribe(&samples, 16));
-            capture.resume();
-            let text = result?;
-            println!("inference finished in {:.1}s", started.elapsed().as_secs_f32());
-            if text.is_empty() {
-                println!("recognition result: <empty/EOS> (model selected EOS)");
-            } else {
-                println!("recognition result: {text}");
-                client.commit(&text).await?;
-                println!("committed to Fcitx5");
-            }
+            commit_transcript(model, client, capture, &samples).await?;
         }
     }
+}
+
+async fn listen_ptt(
+    model: &mut model::ArkModel,
+    client: &mut IpcClient,
+    capture: &AudioCapture,
+    resampler: &mut AudioResampler,
+) -> anyhow::Result<()> {
+    let ptt = PttSocket::bind()?;
+    let mut gate = PttGate::new();
+    loop {
+        for event in ptt.poll() {
+            match event {
+                PttEvent::Down => {
+                    if !gate.is_held() {
+                        println!("ptt: recording");
+                        let _ = client.preedit("...").await;
+                    }
+                    gate.set_held(true);
+                }
+                PttEvent::Up => {
+                    let _ = client.clear().await;
+                    if let Some(samples) = gate.release() {
+                        commit_transcript(model, client, capture, &samples).await?;
+                    } else {
+                        println!("ptt: discarded short utterance");
+                    }
+                }
+            }
+        }
+        match capture.receiver().recv_timeout(std::time::Duration::from_millis(20)) {
+            Ok(chunk) => gate.push(&resampler.process(&chunk)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    Ok(())
+}
+
+async fn commit_transcript(
+    model: &mut model::ArkModel,
+    client: &mut IpcClient,
+    capture: &AudioCapture,
+    samples: &[f32],
+) -> anyhow::Result<()> {
+    println!("segment detected: {:.2}s; running ARK...", samples.len() as f32 / 16_000.0);
+    capture.pause();
+    while capture.receiver().try_recv().is_ok() {}
+    let started = std::time::Instant::now();
+    let result = tokio::task::block_in_place(|| model.transcribe(samples, 16));
+    capture.resume();
+    let text = result?;
+    println!("inference finished in {:.1}s", started.elapsed().as_secs_f32());
+    if text.is_empty() {
+        println!("recognition result: <empty/EOS> (model selected EOS)");
+    } else {
+        println!("recognition result: {text}");
+        client.commit(&text).await?;
+        println!("committed to Fcitx5");
+    }
+    Ok(())
 }

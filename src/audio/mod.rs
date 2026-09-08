@@ -1,6 +1,5 @@
 pub mod capture;
 pub mod resampler;
-pub mod segmenter;
 pub mod features;
 
 pub use capture::AudioCapture;
