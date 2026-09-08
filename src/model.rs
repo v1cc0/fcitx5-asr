@@ -17,9 +17,15 @@ pub struct ArkConfig {
     pub prompt_prefix_ids: Vec<i64>,
     pub prompt_suffix_ids: Vec<i64>,
     pub suppress_token_ids: Vec<i64>,
+    #[serde(default = "default_trim_features")]
+    pub trim_features: usize,
 }
 
+fn default_trim_features() -> usize { 8 }
+
 const REPO: &str = "OpenVoiceOS/ARK-ASR-0.6B-onnx";
+const VOCAB: usize = 163_958;
+const HIDDEN: usize = 896;
 
 pub struct ArkModel {
     pub encoder: Session,
@@ -30,6 +36,7 @@ pub struct ArkModel {
     pub settings: ArkConfig,
     vocab_map: HashMap<String, i64>,
     tokenizer: Tokenizer,
+    suppress_mask: Vec<u8>,
 }
 
 pub type KvCache = Vec<DynValue>;
@@ -37,14 +44,15 @@ pub type KvCache = Vec<DynValue>;
 impl ArkModel {
     pub fn transcribe(&mut self, samples: &[f32], max_tokens: usize) -> Result<String> {
         let features = crate::audio::features::whisper_log_mel(samples);
-        let (audio, _) = self.encode_with_shape(&features)?;
-        // ARK merges two Whisper frames then groups four merged frames per audio token.
-        let audio_tokens = (((samples.len() / 160 + 1) / 2) / 4).max(1);
-        let audio_tokens = audio_tokens.min(audio.len() / 896);
-        let (prompt, seq) = self.compose_prompt(&audio[..audio_tokens * 896], audio_tokens)?;
+        let trim = self.settings.trim_features.max(1);
+        anyhow::ensure!(features[0].len() % trim == 0, "mel frames {} not divisible by trim_features {trim}", features[0].len());
+        let (audio, audio_tokens) = self.encode_with_shape(&features)?;
+        anyhow::ensure!(audio.len() == audio_tokens * HIDDEN, "encoder embed mismatch");
+        anyhow::ensure!(audio_tokens == features[0].len() / trim, "encoder tokens {audio_tokens} != frames/trim {}", features[0].len() / trim);
+        let (prompt, seq) = self.compose_prompt(&audio, audio_tokens)?;
         let (logits, mut cache) = self.decode_prompt_with_cache(&prompt, seq)?;
-        let first = &logits[logits.len().saturating_sub(163_958)..];
-        let mut token = first.iter().enumerate().filter(|(i, _)| !self.settings.suppress_token_ids.contains(&(*i as i64)) && !self.settings.eos_token_ids.contains(&(*i as i64))).max_by(|a,b| a.1.total_cmp(b.1)).map(|(i,_)| i as i64).unwrap_or_else(|| self.greedy_token(first));
+        let first = last_logits(&logits);
+        let mut token = self.greedy_token(first);
         println!("ARK first token: {token}, top={:?}", self.top_tokens(first, 5));
         let mut ids = Vec::new();
         let mut last_token = None;
@@ -55,7 +63,7 @@ impl ArkModel {
             if last_token == Some(token) { repeats += 1; if repeats >= 4 { break; } } else { repeats = 0; last_token = Some(token); }
             let embed = self.embed(&[token])?;
             let logits = self.decode_next(&embed, seq + ids.len() - 1, &mut cache)?;
-            token = self.greedy_token(&logits[logits.len().saturating_sub(163_958)..]);
+            token = self.greedy_token(last_logits(&logits));
         }
         Ok(self.decode_tokens(&ids).trim().to_owned())
     }
@@ -73,7 +81,7 @@ impl ArkModel {
 
     pub fn decode_prompt(&mut self, embeds: &[f32], tokens: usize) -> Result<Vec<f32>> {
         let mut inputs = ort::inputs![
-            "inputs_embeds" => ort::value::Tensor::from_array(Array3::from_shape_vec((1, tokens, 896), embeds.to_vec())?)?,
+            "inputs_embeds" => ort::value::Tensor::from_array(Array3::from_shape_vec((1, tokens, HIDDEN), embeds.to_vec())?)?,
             "attn_bias" => ort::value::Tensor::from_array(Array4::from_shape_vec((1, 1, tokens, tokens), causal_bias(tokens))?)?,
             "position_ids" => ort::value::Tensor::from_array(Array2::from_shape_vec((1, tokens), (0..tokens as i64).collect())?)?,
         ];
@@ -88,7 +96,7 @@ impl ArkModel {
 
     pub fn decode_prompt_with_cache(&mut self, embeds: &[f32], tokens: usize) -> Result<(Vec<f32>, KvCache)> {
         let mut inputs = ort::inputs![
-            "inputs_embeds" => ort::value::Tensor::from_array(Array3::from_shape_vec((1, tokens, 896), embeds.to_vec())?)?,
+            "inputs_embeds" => ort::value::Tensor::from_array(Array3::from_shape_vec((1, tokens, HIDDEN), embeds.to_vec())?)?,
             "attn_bias" => ort::value::Tensor::from_array(Array4::from_shape_vec((1, 1, tokens, tokens), causal_bias(tokens))?)?,
             "position_ids" => ort::value::Tensor::from_array(Array2::from_shape_vec((1, tokens), (0..tokens as i64).collect())?)?,
         ];
@@ -104,9 +112,9 @@ impl ArkModel {
     }
 
     pub fn decode_next(&mut self, embed: &[f32], position: usize, cache: &mut KvCache) -> Result<Vec<f32>> {
-        anyhow::ensure!(embed.len() == 896 && cache.len() == 48, "invalid decoder step inputs");
+        anyhow::ensure!(embed.len() == HIDDEN && cache.len() == 48, "invalid decoder step inputs");
         let mut inputs = ort::inputs![
-            "inputs_embeds" => ort::value::Tensor::from_array(Array3::from_shape_vec((1, 1, 896), embed.to_vec())?)?,
+            "inputs_embeds" => ort::value::Tensor::from_array(Array3::from_shape_vec((1, 1, HIDDEN), embed.to_vec())?)?,
             "attn_bias" => ort::value::Tensor::from_array(Array4::from_shape_vec((1, 1, 1, position + 1), vec![0.0f32; position + 1])?)?,
             "position_ids" => ort::value::Tensor::from_array(Array2::from_shape_vec((1, 1), vec![position as i64])?)?,
         ];
@@ -122,8 +130,7 @@ impl ArkModel {
 
     pub fn prompt_next_token(&mut self, embeds: &[f32], tokens: usize) -> Result<i64> {
         let logits = self.decode_prompt(embeds, tokens)?;
-        let vocab = 163_958;
-        let last = logits.get(logits.len().saturating_sub(vocab)..).unwrap_or(&logits);
+        let last = last_logits(&logits);
         Ok(self.greedy_token(last))
     }
 
@@ -143,11 +150,11 @@ impl ArkModel {
     }
 
     pub fn compose_prompt(&mut self, audio_embeds: &[f32], audio_frames: usize) -> Result<(Vec<f32>, usize)> {
-        anyhow::ensure!(audio_embeds.len() == audio_frames * 896, "invalid audio embedding shape");
+        anyhow::ensure!(audio_embeds.len() == audio_frames * HIDDEN, "invalid audio embedding shape");
         let mut ids = self.settings.prompt_prefix_ids.clone();
         ids.extend_from_slice(&self.settings.prompt_suffix_ids);
         let text = self.embed(&ids)?;
-        let prefix_len = self.settings.prompt_prefix_ids.len() * 896;
+        let prefix_len = self.settings.prompt_prefix_ids.len() * HIDDEN;
         let mut out = Vec::with_capacity(text.len() + audio_embeds.len());
         out.extend_from_slice(&text[..prefix_len]);
         out.extend_from_slice(audio_embeds);
@@ -174,6 +181,12 @@ impl ArkModel {
         let tokenizer = Tokenizer::from_file(tok_repo.get("tokenizer.json")?).map_err(|e| anyhow::anyhow!(e))?;
         let settings: ArkConfig = serde_json::from_slice(&std::fs::read(&config)?)?;
         let vocab_map: HashMap<String, i64> = serde_json::from_slice(&std::fs::read(&vocab)?)?;
+        let mut suppress_mask = vec![0u8; VOCAB];
+        for &id in &settings.suppress_token_ids {
+            if let Some(slot) = usize::try_from(id).ok().and_then(|i| suppress_mask.get_mut(i)) {
+                *slot = 1;
+            }
+        }
         ort::init().with_name("fcitx5-asr").commit();
         Ok(Self {
             encoder: Session::builder()?.commit_from_file(encoder_path)?,
@@ -184,6 +197,7 @@ impl ArkModel {
             settings,
             vocab_map,
             tokenizer,
+            suppress_mask,
         })
     }
 
@@ -198,16 +212,24 @@ impl ArkModel {
     pub fn greedy_token(&self, logits: &[f32]) -> i64 {
         let mut best = (f32::NEG_INFINITY, 0usize);
         for (id, &score) in logits.iter().enumerate() {
-            if !self.settings.suppress_token_ids.contains(&(id as i64)) && score > best.0 { best = (score, id); }
+            if !self.suppressed(id) && score > best.0 { best = (score, id); }
         }
         best.1 as i64
     }
 
     pub fn top_tokens(&self, logits: &[f32], n: usize) -> Vec<(i64, f32)> {
-        let mut v: Vec<_> = logits.iter().enumerate().filter(|(i, _)| !self.settings.suppress_token_ids.contains(&(*i as i64))).map(|(i, s)| (i as i64, *s)).collect();
+        let mut v: Vec<_> = logits.iter().enumerate().filter(|(i, _)| !self.suppressed(*i)).map(|(i, s)| (i as i64, *s)).collect();
         v.sort_by(|a, b| b.1.total_cmp(&a.1));
         v.truncate(n); v
     }
+
+    fn suppressed(&self, id: usize) -> bool {
+        self.suppress_mask.get(id).copied().unwrap_or(0) != 0
+    }
+}
+
+fn last_logits(logits: &[f32]) -> &[f32] {
+    logits.get(logits.len().saturating_sub(VOCAB)..).unwrap_or(logits)
 }
 
 fn causal_bias(n: usize) -> Vec<f32> {

@@ -5,7 +5,7 @@ mod vad;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use ipc::{IpcClient, PttEvent, PttSocket};
-use audio::{AudioCapture, AudioResampler};
+use audio::{AudioCapture, AudioResampler, TARGET_SAMPLE_RATE};
 use vad::{EnergyVad, PttGate};
 
 #[derive(Parser)]
@@ -71,11 +71,12 @@ async fn main() -> anyhow::Result<()> {
             ids.extend_from_slice(&model.settings.prompt_suffix_ids);
             let embeds = model.embed(&ids)?;
             let (logits, mut cache) = model.decode_prompt_with_cache(&embeds, ids.len())?;
-            let token = model.greedy_token(&logits[logits.len() - 163_958..]);
-            println!("top tokens: {:?}", model.top_tokens(&logits[logits.len() - 163_958..], 5));
+            let last = &logits[logits.len().saturating_sub(163_958)..];
+            let token = model.greedy_token(last);
+            println!("top tokens: {:?}", model.top_tokens(last, 5));
             let next_embed = model.embed(&[token])?;
             let next_logits = model.decode_next(&next_embed, ids.len(), &mut cache)?;
-            let next = model.greedy_token(&next_logits[next_logits.len() - 163_958..]);
+            let next = model.greedy_token(&next_logits[next_logits.len().saturating_sub(163_958)..]);
             println!("prompt next tokens: {token}, {next}; KV tensors: {}", cache.len());
         }
         Command::Listen { int8, trigger } => listen(int8, trigger).await?,
@@ -163,11 +164,11 @@ async fn commit_transcript(
     capture: &AudioCapture,
     samples: &[f32],
 ) -> anyhow::Result<()> {
-    println!("segment detected: {:.2}s; running ARK...", samples.len() as f32 / 16_000.0);
+    println!("segment detected: {:.2}s; running ARK...", samples.len() as f32 / TARGET_SAMPLE_RATE as f32);
     capture.pause();
     while capture.receiver().try_recv().is_ok() {}
     let started = std::time::Instant::now();
-    let result = tokio::task::block_in_place(|| model.transcribe(samples, 16));
+    let result = tokio::task::block_in_place(|| model.transcribe(samples, 64));
     capture.resume();
     let text = result?;
     println!("inference finished in {:.1}s", started.elapsed().as_secs_f32());
