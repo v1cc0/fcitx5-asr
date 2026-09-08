@@ -4,40 +4,54 @@ const TARGET_HZ: usize = 16_000;
 pub const MIN_VAD_SAMPLES: usize = TARGET_HZ * 8 / 10;
 pub const MIN_PTT_SAMPLES: usize = TARGET_HZ * 4 / 10;
 pub const MAX_SAMPLES: usize = TARGET_HZ * 30;
+const PRE_ROLL_SAMPLES: usize = TARGET_HZ * 3 / 10;
+const HANGOVER_SAMPLES: usize = TARGET_HZ * 4 / 10;
 
 fn rms(chunk: &[f32]) -> f32 {
     (chunk.iter().map(|x| x * x).sum::<f32>() / chunk.len().max(1) as f32).sqrt()
 }
 
-/// Energy gate with hangover, matching the previous listen-mode segmenter.
+/// Energy gate with time-based hangover and pre-roll.
+/// Hangover is measured in samples so PipeWire's 128-frame periods do not
+/// slice an utterance into 1-second fragments.
 pub struct EnergyVad {
     active: Vec<f32>,
-    silence_chunks: usize,
+    preroll: Vec<f32>,
+    silence_samples: usize,
     threshold: f32,
-    hangover: usize,
 }
 
 impl EnergyVad {
-    pub fn new(threshold: f32, hangover: usize) -> Self {
-        Self { active: Vec::new(), silence_chunks: 0, threshold, hangover }
+    pub fn new(threshold: f32) -> Self {
+        Self { active: Vec::new(), preroll: Vec::new(), silence_samples: 0, threshold }
     }
 
     pub fn push(&mut self, chunk: &[f32]) -> Option<Vec<f32>> {
         if rms(chunk) >= self.threshold {
+            if self.active.is_empty() {
+                self.active.extend_from_slice(&self.preroll);
+                self.preroll.clear();
+            }
             self.active.extend_from_slice(chunk);
-            self.silence_chunks = 0;
+            self.silence_samples = 0;
             if self.active.len() >= MAX_SAMPLES {
                 return Some(std::mem::take(&mut self.active));
             }
         } else if !self.active.is_empty() {
             self.active.extend_from_slice(chunk);
-            self.silence_chunks += 1;
-            if self.silence_chunks >= self.hangover {
-                self.silence_chunks = 0;
-                if self.active.len() >= MIN_VAD_SAMPLES {
-                    return Some(std::mem::take(&mut self.active));
+            self.silence_samples += chunk.len();
+            if self.silence_samples >= HANGOVER_SAMPLES {
+                self.silence_samples = 0;
+                let seg = std::mem::take(&mut self.active);
+                if seg.len() >= MIN_VAD_SAMPLES {
+                    return Some(seg);
                 }
-                self.active.clear();
+            }
+        } else {
+            self.preroll.extend_from_slice(chunk);
+            if self.preroll.len() > PRE_ROLL_SAMPLES {
+                let extra = self.preroll.len() - PRE_ROLL_SAMPLES;
+                self.preroll.drain(..extra);
             }
         }
         None
@@ -92,21 +106,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn vad_emits_after_hangover() {
-        let mut vad = EnergyVad::new(0.05, 2);
+    fn vad_emits_after_time_hangover() {
+        let mut vad = EnergyVad::new(0.05);
         let speech = vec![0.2; 8_000];
-        let silence = vec![0.0; 8_000];
+        let silence = vec![0.0; 4_000];
         assert!(vad.push(&speech).is_none());
         assert!(vad.push(&silence).is_none());
         let seg = vad.push(&silence).expect("segment");
-        assert_eq!(seg.len(), 24_000);
+        assert_eq!(seg.len(), 16_000);
+    }
+
+    #[test]
+    fn vad_keeps_preroll() {
+        let mut vad = EnergyVad::new(0.05);
+        assert!(vad.push(&vec![0.0; 4_800]).is_none());
+        assert!(vad.push(&vec![0.2; 8_000]).is_none());
+        let silence = vec![0.0; 6_400];
+        let seg = vad.push(&silence).expect("segment");
+        assert_eq!(seg.len(), 4_800 + 8_000 + 6_400);
     }
 
     #[test]
     fn vad_drops_short_noise() {
-        let mut vad = EnergyVad::new(0.05, 1);
+        let mut vad = EnergyVad::new(0.05);
         assert!(vad.push(&vec![0.2; 100]).is_none());
-        assert!(vad.push(&vec![0.0; 100]).is_none());
+        assert!(vad.push(&vec![0.0; HANGOVER_SAMPLES]).is_none());
     }
 
     #[test]

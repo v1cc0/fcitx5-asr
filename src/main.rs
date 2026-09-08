@@ -5,7 +5,7 @@ mod vad;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use ipc::{IpcClient, PttEvent, PttSocket};
-use audio::{AudioCapture, AudioResampler, TARGET_SAMPLE_RATE};
+use audio::{AudioCapture, AudioResampler, TARGET_SAMPLE_RATE, load_wav_16k};
 use vad::{EnergyVad, PttGate};
 
 #[derive(Parser)]
@@ -39,6 +39,12 @@ enum Command {
         int8: bool,
         #[arg(long, value_enum, default_value_t = Trigger::Vad)]
         trigger: Trigger,
+    },
+    /// Transcribe a WAV file (offline, no Fcitx5).
+    Transcribe {
+        path: String,
+        #[arg(long)]
+        int8: bool,
     },
 }
 
@@ -80,6 +86,16 @@ async fn main() -> anyhow::Result<()> {
             println!("prompt next tokens: {token}, {next}; KV tensors: {}", cache.len());
         }
         Command::Listen { int8, trigger } => listen(int8, trigger).await?,
+        Command::Transcribe { path, int8 } => {
+            let samples = load_wav_16k(&path)?;
+            let rms = (samples.iter().map(|x| x * x).sum::<f32>() / samples.len().max(1) as f32).sqrt();
+            println!("wav: {} samples ({:.2}s) rms={rms:.4}", samples.len(), samples.len() as f32 / TARGET_SAMPLE_RATE as f32);
+            let mut model = model::ArkModel::download_and_load(int8)?;
+            let started = std::time::Instant::now();
+            let text = model.transcribe(&samples, 64)?;
+            println!("inference finished in {:.1}s", started.elapsed().as_secs_f32());
+            println!("recognition result: {}", if text.is_empty() { "<empty/EOS>" } else { &text });
+        }
     }
     Ok(())
 }
@@ -105,7 +121,7 @@ async fn listen_vad(
     capture: &AudioCapture,
     resampler: &mut AudioResampler,
 ) -> anyhow::Result<()> {
-    let mut segmenter = EnergyVad::new(0.01, 12);
+    let mut segmenter = EnergyVad::new(0.01);
     let mut chunks = 0usize;
     loop {
         let chunk = tokio::task::block_in_place(|| capture.receiver().recv())?;
@@ -164,7 +180,8 @@ async fn commit_transcript(
     capture: &AudioCapture,
     samples: &[f32],
 ) -> anyhow::Result<()> {
-    println!("segment detected: {:.2}s; running ARK...", samples.len() as f32 / TARGET_SAMPLE_RATE as f32);
+    let rms = (samples.iter().map(|x| x * x).sum::<f32>() / samples.len().max(1) as f32).sqrt();
+    println!("segment detected: {:.2}s rms={rms:.4}; running ARK...", samples.len() as f32 / TARGET_SAMPLE_RATE as f32);
     capture.pause();
     while capture.receiver().try_recv().is_ok() {}
     let started = std::time::Instant::now();
