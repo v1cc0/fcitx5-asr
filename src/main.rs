@@ -89,7 +89,7 @@ async fn listen(int8: bool, trigger: Trigger) -> anyhow::Result<()> {
     let mut client = IpcClient::connect().await?;
     let capture = AudioCapture::default()?;
     let mut resampler = AudioResampler::new(capture.sample_rate);
-    println!("listening at {} Hz ({}); Ctrl-C to stop", capture.sample_rate, match trigger {
+    println!("listening at {} Hz, {} ch ({}); Ctrl-C to stop", capture.sample_rate, capture.channels, match trigger {
         Trigger::Vad => "VAD",
         Trigger::Ptt => "PTT: hold Right Ctrl or Pause",
     });

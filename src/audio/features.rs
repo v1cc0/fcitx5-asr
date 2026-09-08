@@ -8,39 +8,35 @@ const HOP: usize = 160;
 const MEL: usize = 128;
 const N_FREQ: usize = NFFT / 2 + 1;
 const MAX_SAMPLES: usize = 30 * TARGET_SAMPLE_RATE as usize;
-/// ARK encoder / MLP adapter emits one embedding per 8 Whisper frames.
-const TRIM_FEATURES: usize = 8;
-const ALIGN_SAMPLES: usize = HOP * TRIM_FEATURES;
+const FRAMES: usize = MAX_SAMPLES / HOP;
 
 /// Whisper-128 log-mel features, shaped `[mel][frame]`.
 ///
 /// Matches onnx-asr `whisper128`: Slaney-Slaney filterbank, periodic Hann,
-/// centered reflect STFT, last time frame dropped. Waveforms are padded to a
-/// multiple of 8 hops (not a fixed 30 s window) so the RoPE encoder sees the
-/// actual utterance length.
+/// centered reflect STFT, last time frame dropped. The encoder is exported
+/// against a fixed 30-second / 3000-frame window; short utterances are
+/// zero-padded, not truncated to a variable-length spectrogram.
 pub fn whisper_log_mel(samples: &[f32]) -> Vec<Vec<f32>> {
     let n = samples.len().min(MAX_SAMPLES);
-    let aligned = aligned_sample_count(n);
-    let mut waveform = vec![0.0f32; aligned];
+    let mut waveform = vec![0.0f32; MAX_SAMPLES];
     waveform[..n].copy_from_slice(&samples[..n]);
 
     let pad = NFFT / 2;
-    let mut padded = vec![0.0f32; aligned + NFFT];
+    let mut padded = vec![0.0f32; MAX_SAMPLES + NFFT];
     for i in 0..pad {
         padded[i] = waveform[pad - i];
-        padded[pad + aligned + i] = waveform[aligned - 2 - i];
+        padded[pad + MAX_SAMPLES + i] = waveform[MAX_SAMPLES - 2 - i];
     }
-    padded[pad..pad + aligned].copy_from_slice(&waveform);
+    padded[pad..pad + MAX_SAMPLES].copy_from_slice(&waveform);
 
-    let frames = aligned / HOP;
     let window = hann_window();
     let filters = mel_filters();
     let mut planner = FftPlanner::new();
     let fft = planner.plan_fft_forward(NFFT);
     let mut buf = vec![Complex::default(); NFFT];
-    let mut out = vec![vec![0.0; frames]; MEL];
+    let mut out = vec![vec![0.0; FRAMES]; MEL];
 
-    for frame in 0..frames {
+    for frame in 0..FRAMES {
         for (i, z) in buf.iter_mut().enumerate() {
             *z = Complex::new(padded[frame * HOP + i] * window[i], 0.0);
         }
@@ -61,10 +57,6 @@ pub fn whisper_log_mel(samples: &[f32]) -> Vec<Vec<f32>> {
         *x = ((*x).max(max - 8.0) + 4.0) / 4.0;
     }
     out
-}
-
-fn aligned_sample_count(n: usize) -> usize {
-    n.div_ceil(ALIGN_SAMPLES).max(1) * ALIGN_SAMPLES
 }
 
 fn hann_window() -> &'static [f32; NFFT] {
@@ -131,22 +123,11 @@ mod tests {
     }
 
     #[test]
-    fn aligned_frame_counts_are_multiples_of_trim() {
-        let cases = [
-            (0, 8),
-            (160, 8),
-            (1280, 8),
-            (16_000, 104),
-            (19_360, 128),
-            (480_000, 3000),
-            (480_001, 3000),
-        ];
-        for (samples, frames) in cases {
-            let feat = whisper_log_mel(&vec![0.0; samples]);
-            assert_eq!(feat.len(), MEL);
-            assert_eq!(feat[0].len(), frames, "samples={samples}");
-            assert_eq!(feat[0].len() % TRIM_FEATURES, 0);
-        }
+    fn always_emits_whisper_30s_window() {
+        let feat = whisper_log_mel(&vec![0.0; 1600]);
+        assert_eq!(feat.len(), MEL);
+        assert_eq!(feat[0].len(), FRAMES);
+        assert_eq!(FRAMES % 8, 0);
     }
 
     #[test]
@@ -182,7 +163,7 @@ mod tests {
         let mut samples = vec![0.0; 1280];
         samples[0] = 1.0;
         let feat = whisper_log_mel(&samples);
-        assert_eq!(feat[0].len(), 8);
+        assert_eq!(feat[0].len(), FRAMES);
         close(feat[0][0], 0.5231274, 2e-3);
         close(feat[0][1], 0.01310978, 2e-3);
         close(feat[0][2], -1.3450135, 2e-3);
@@ -196,7 +177,7 @@ mod tests {
             .map(|i| 0.5 * (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 16_000.0).sin())
             .collect();
         let feat = whisper_log_mel(&sine);
-        assert_eq!(feat[0].len(), 104);
+        assert_eq!(feat[0].len(), FRAMES);
         close(feat[0][0], 0.9075196, 3e-3);
         close(feat[20][0], 1.3302985, 3e-3);
         close(feat[40][0], 0.7472001, 3e-3);
