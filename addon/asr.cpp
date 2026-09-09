@@ -175,15 +175,31 @@ AsrAddon::AsrAddon(Instance *instance) : instance_(instance) {
         [this](Event &event) { onKeyEvent(static_cast<KeyEvent &>(event)); });
 }
 
+namespace {
+bool pathIsThisSocket(int fd, const std::string &path) {
+    if (fd < 0 || path.empty()) {
+        return false;
+    }
+    struct stat fd_st {};
+    struct stat path_st {};
+    if (fstat(fd, &fd_st) != 0 || stat(path.c_str(), &path_st) != 0) {
+        return false;
+    }
+    return fd_st.st_dev == path_st.st_dev && fd_st.st_ino == path_st.st_ino;
+}
+} // namespace
+
 AsrAddon::~AsrAddon() {
     serverSource_.reset();
     clients_.clear();
     if (serverFd_ >= 0) {
+        // fcitx5 -r overlaps old and new instances. Unlinking blindly here
+        // deletes the successor's socket file while its listen fd stays open.
+        if (pathIsThisSocket(serverFd_, socketPath_)) {
+            unlink(socketPath_.c_str());
+        }
         close(serverFd_);
         serverFd_ = -1;
-    }
-    if (!socketPath_.empty()) {
-        unlink(socketPath_.c_str());
     }
 }
 
