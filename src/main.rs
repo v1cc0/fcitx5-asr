@@ -35,7 +35,7 @@ enum Command {
         text: String,
     },
     Clear,
-    /// Download and validate ARK-ASR ONNX files into the Hugging Face cache.
+    /// Download and validate Audio8-ASR-0.1B ONNX files into the Hugging Face cache.
     Download {
         #[arg(long)]
         int8: bool,
@@ -88,40 +88,37 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Download { int8 } => {
             let model = model::ArkModel::download_and_load(int8)?;
-            println!("ARK-ASR loaded (config: {})", model.config.display());
+            println!("Audio8-ASR-0.1B loaded ({})", model.config.display());
         }
         Command::Inspect { int8 } => {
             let model = model::ArkModel::download_and_load(int8)?;
-            for io in model.decoder.inputs() {
-                println!("input {}: {:?}", io.name(), io.dtype());
-            }
-            for io in model.decoder.outputs() {
-                println!("output {}: {:?}", io.name(), io.dtype());
+            for (name, sess) in [
+                ("audio", &model.audio),
+                ("prefill", &model.prefill),
+                ("decode", &model.decode),
+            ] {
+                println!("[{name}]");
+                for io in sess.inputs() {
+                    println!("  input {}: {:?}", io.name(), io.dtype());
+                }
+                for io in sess.outputs() {
+                    println!("  output {}: {:?}", io.name(), io.dtype());
+                }
             }
         }
         Command::Probe { int8 } => {
             let mut model = model::ArkModel::download_and_load(int8)?;
-            let features = audio::features::whisper_log_mel(&vec![0.0; 16_000]);
-            let embeds = model.encode(&features)?;
-            println!("encoder probe: {} values", embeds.len());
+            let embeds = model.audio_embeddings(&vec![0.0; 16_000])?;
+            println!(
+                "audio embeddings: {} values ({} tokens)",
+                embeds.len(),
+                embeds.len() / 512
+            );
         }
         Command::Prompt { int8 } => {
             let mut model = model::ArkModel::download_and_load(int8)?;
-            let mut ids = model.settings.prompt_prefix_ids.clone();
-            ids.extend_from_slice(&model.settings.prompt_suffix_ids);
-            let embeds = model.embed(&ids)?;
-            let (logits, mut cache) = model.decode_prompt_with_cache(&embeds, ids.len())?;
-            let last = &logits[logits.len().saturating_sub(163_958)..];
-            let token = model.greedy_token(last);
-            println!("top tokens: {:?}", model.top_tokens(last, 5));
-            let next_embed = model.embed(&[token])?;
-            let next_logits = model.decode_next(&next_embed, ids.len(), &mut cache)?;
-            let next =
-                model.greedy_token(&next_logits[next_logits.len().saturating_sub(163_958)..]);
-            println!(
-                "prompt next tokens: {token}, {next}; KV tensors: {}",
-                cache.len()
-            );
+            let result = model.transcribe(&vec![0.0; 16_000], 16)?;
+            println!("silence transcript: {:?}", result.text);
         }
         Command::Listen { int8, trigger } => listen(int8, trigger).await?,
         Command::Transcribe { path, int8 } => {
