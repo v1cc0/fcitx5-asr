@@ -52,7 +52,11 @@ pub fn whisper_log_mel(samples: &[f32]) -> Vec<Vec<f32>> {
         }
     }
 
-    let max = out.iter().flatten().copied().fold(f32::NEG_INFINITY, f32::max);
+    let max = out
+        .iter()
+        .flatten()
+        .copied()
+        .fold(f32::NEG_INFINITY, f32::max);
     for x in out.iter_mut().flatten() {
         *x = ((*x).max(max - 8.0) + 4.0) / 4.0;
     }

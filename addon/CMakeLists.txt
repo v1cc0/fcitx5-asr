@@ -6,9 +6,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 find_package(Fcitx5Core 5.0.0 REQUIRED)
+find_package(Fcitx5Config 5.0.0 REQUIRED)
 
 add_library(fcitx5-asr MODULE asr.cpp)
-target_link_libraries(fcitx5-asr PRIVATE Fcitx5::Core Fcitx5::Utils)
+target_link_libraries(fcitx5-asr PRIVATE Fcitx5::Core Fcitx5::Config Fcitx5::Utils)
 set_target_properties(fcitx5-asr PROPERTIES
     PREFIX "lib"
     OUTPUT_NAME "fcitx5-asr"

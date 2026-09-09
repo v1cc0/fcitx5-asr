@@ -11,11 +11,16 @@
 #include <fcitx/inputpanel.h>
 #include <fcitx/instance.h>
 #include <fcitx/text.h>
+#include <fcitx-config/configuration.h>
+#include <fcitx-config/iniparser.h>
+#include <fcitx-config/option.h>
+#include <fcitx-config/rawconfig.h>
 #include <fcitx-utils/event.h>
 #include <fcitx-utils/handlertable.h>
 #include <fcitx-utils/key.h>
 #include <fcitx-utils/keysym.h>
 #include <fcitx-utils/log.h>
+#include <fcitx-utils/stringutils.h>
 #include <fcitx-utils/textformatflags.h>
 
 #include <fcntl.h>
@@ -33,6 +38,15 @@
 #include <vector>
 
 namespace fcitx {
+
+FCITX_CONFIGURATION(
+    AsrConfig,
+    KeyListOption pttKeys{
+        this, "PttKeys", "Push-to-talk keys",
+        {Key("Control_R"), Key("Pause")},
+        KeyListConstrain({KeyConstrainFlag::AllowModifierLess,
+                          KeyConstrainFlag::AllowModifierOnly})};
+);
 
 class AsrAddon;
 
@@ -64,9 +78,14 @@ public:
     explicit AsrAddon(Instance *instance);
     ~AsrAddon() override;
 
+    void reloadConfig() override;
+    const Configuration *getConfig() const override { return &config_; }
+    void setConfig(const RawConfig &config) override;
+
     void commitText(const std::string &text);
     void setPreedit(const std::string &text);
     void clearPreedit();
+    std::string handlePttKeys(std::string_view args);
 
     void removeClient(int fd) {
         clients_.erase(fd);
@@ -79,8 +98,12 @@ private:
     void handleNewConnection();
     void onKeyEvent(KeyEvent &event);
     bool sendPtt(bool down);
+    bool isPttKey(const Key &raw) const;
+
+    static constexpr char ConfPath[] = "conf/fcitx5-asr.conf";
 
     Instance *instance_;
+    AsrConfig config_;
     int serverFd_ = -1;
     std::string socketPath_;
     std::unique_ptr<EventSourceIO> serverSource_;
@@ -107,13 +130,11 @@ bool ClientSession::onReadable() {
         }
     }
 
-    // Process line by line
     size_t pos;
     while ((pos = readBuf_.find('\n')) != std::string::npos) {
         std::string line = readBuf_.substr(0, pos);
         readBuf_.erase(0, pos + 1);
 
-        // Strip trailing CR
         if (!line.empty() && line.back() == '\r') {
             line.pop_back();
         }
@@ -131,6 +152,16 @@ bool ClientSession::onReadable() {
         } else if (line == "PING") {
             const char pong[] = "PONG\n";
             (void)write(fd_, pong, sizeof(pong) - 1);
+        } else if (line == "PTTKEYS" || line.rfind("PTTKEYS ", 0) == 0) {
+            std::string args;
+            if (line.size() > 7) {
+                args = line.substr(7);
+            }
+            std::string out = addon_->handlePttKeys(args);
+            out.push_back('\n');
+            (void)write(fd_, out.data(), out.size());
+        } else {
+            (void)write(fd_, "ERR unknown\n", 12);
         }
     }
     return open;
@@ -138,6 +169,7 @@ bool ClientSession::onReadable() {
 
 AsrAddon::AsrAddon(Instance *instance) : instance_(instance) {
     initSocket();
+    reloadConfig();
     keyWatch_ = instance_->watchEvent(
         EventType::InputContextKeyEvent, EventWatcherPhase::PreInputMethod,
         [this](Event &event) { onKeyEvent(static_cast<KeyEvent &>(event)); });
@@ -153,6 +185,37 @@ AsrAddon::~AsrAddon() {
     if (!socketPath_.empty()) {
         unlink(socketPath_.c_str());
     }
+}
+
+void AsrAddon::reloadConfig() {
+    readAsIni(config_, ConfPath);
+}
+
+void AsrAddon::setConfig(const RawConfig &config) {
+    config_.load(config, true);
+    safeSaveAsIni(config_, ConfPath);
+}
+
+std::string AsrAddon::handlePttKeys(std::string_view args) {
+    const auto names = stringutils::split(stringutils::trimView(args), " ",
+                                          stringutils::SplitBehavior::SkipEmpty);
+    if (names.empty()) {
+        return "OK " + Key::keyListToString(*config_.pttKeys);
+    }
+    KeyList keys;
+    keys.reserve(names.size());
+    for (const auto &name : names) {
+        Key key(name);
+        if (!key.isValid()) {
+            return "ERR invalid key: " + name;
+        }
+        keys.push_back(key);
+    }
+    if (!config_.pttKeys.setValue(std::move(keys))) {
+        return "ERR invalid key list";
+    }
+    safeSaveAsIni(config_, ConfPath);
+    return "OK";
 }
 
 void AsrAddon::initSocket() {
@@ -202,9 +265,18 @@ void AsrAddon::initSocket() {
     FCITX_INFO() << "fcitx5-asr: Listening on " << socketPath_;
 }
 
+bool AsrAddon::isPttKey(const Key &raw) const {
+    const auto sym = raw.sym();
+    for (const auto &key : *config_.pttKeys) {
+        if (sym == key.sym()) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void AsrAddon::onKeyEvent(KeyEvent &event) {
-    const auto sym = event.rawKey().sym();
-    if (sym != FcitxKey_Control_R && sym != FcitxKey_Pause) {
+    if (!isPttKey(event.rawKey())) {
         return;
     }
     if (sendPtt(!event.isRelease())) {

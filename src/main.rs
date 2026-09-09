@@ -5,7 +5,7 @@ mod vad;
 
 use audio::{AudioCapture, AudioResampler, TARGET_SAMPLE_RATE, load_wav_16k};
 use clap::{Parser, Subcommand, ValueEnum};
-use ipc::{IpcClient, PttEvent, PttSocket};
+use ipc::{DEFAULT_PTT_KEYS, IpcClient, PttEvent, PttSocket, format_ptt_hold};
 use vad::{EnergyVad, PttGate};
 
 const VAD_MIN_ABS: f32 = 0.015;
@@ -21,7 +21,7 @@ enum Trigger {
     /// Energy VAD: auto-cut on silence.
     #[default]
     Vad,
-    /// Hold Right Ctrl or Pause in a focused Fcitx5 window.
+    /// Hold the configured PTT key in a focused Fcitx5 window.
     Ptt,
 }
 
@@ -57,6 +57,9 @@ enum Command {
         int8: bool,
         #[arg(long, value_enum, default_value_t = Trigger::Vad)]
         trigger: Trigger,
+        /// Fcitx5 key name such as Control_R, Super_L, Pause, F8 (repeatable). Implies --trigger ptt.
+        #[arg(long = "ptt-key", value_name = "KEY")]
+        ptt_keys: Vec<String>,
     },
     /// Transcribe a WAV file (offline, no Fcitx5).
     Transcribe {
@@ -120,7 +123,11 @@ async fn main() -> anyhow::Result<()> {
             let result = model.transcribe(&vec![0.0; 16_000], 16)?;
             println!("silence transcript: {:?}", result.text);
         }
-        Command::Listen { int8, trigger } => listen(int8, trigger).await?,
+        Command::Listen {
+            int8,
+            trigger,
+            ptt_keys,
+        } => listen(int8, trigger, ptt_keys).await?,
         Command::Transcribe { path, int8 } => {
             let samples = load_wav_16k(&path)?;
             let rms =
@@ -150,23 +157,27 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn listen(int8: bool, trigger: Trigger) -> anyhow::Result<()> {
+async fn listen(int8: bool, trigger: Trigger, ptt_keys: Vec<String>) -> anyhow::Result<()> {
+    let trigger = if ptt_keys.is_empty() {
+        trigger
+    } else {
+        Trigger::Ptt
+    };
     let mut model = model::ArkModel::download_and_load(int8)?;
     let mut client = IpcClient::connect().await?;
     let capture = AudioCapture::default()?;
     let mut resampler = AudioResampler::new(capture.sample_rate);
-    println!(
-        "listening at {} Hz, {} ch ({}); Ctrl-C to stop",
-        capture.sample_rate,
-        capture.channels,
-        match trigger {
-            Trigger::Vad => "VAD",
-            Trigger::Ptt => "PTT: hold Right Ctrl or Pause",
-        }
-    );
     match trigger {
-        Trigger::Vad => listen_vad(&mut model, &mut client, &capture, &mut resampler).await,
-        Trigger::Ptt => listen_ptt(&mut model, &mut client, &capture, &mut resampler).await,
+        Trigger::Vad => {
+            println!(
+                "listening at {} Hz, {} ch (VAD); Ctrl-C to stop",
+                capture.sample_rate, capture.channels
+            );
+            listen_vad(&mut model, &mut client, &capture, &mut resampler).await
+        }
+        Trigger::Ptt => {
+            listen_ptt(&mut model, &mut client, &capture, &mut resampler, &ptt_keys).await
+        }
     }
 }
 
@@ -201,8 +212,30 @@ async fn listen_ptt(
     client: &mut IpcClient,
     capture: &AudioCapture,
     resampler: &mut AudioResampler,
+    ptt_keys: &[String],
 ) -> anyhow::Result<()> {
     let ptt = PttSocket::bind()?;
+    if !ptt_keys.is_empty() {
+        client.set_ptt_keys(ptt_keys).await?;
+    }
+    let shown = client
+        .get_ptt_keys()
+        .await
+        .ok()
+        .filter(|keys| !keys.is_empty())
+        .unwrap_or_else(|| {
+            if ptt_keys.is_empty() {
+                DEFAULT_PTT_KEYS.iter().map(|k| (*k).to_string()).collect()
+            } else {
+                ptt_keys.to_vec()
+            }
+        });
+    println!(
+        "listening at {} Hz, {} ch (PTT: hold {}); Ctrl-C to stop",
+        capture.sample_rate,
+        capture.channels,
+        format_ptt_hold(&shown)
+    );
     let mut gate = PttGate::new();
     loop {
         for event in ptt.poll() {
@@ -263,4 +296,31 @@ async fn commit_transcript(
         println!("committed to Fcitx5");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn ptt_key_flag_is_repeatable() {
+        let args = Args::parse_from([
+            "fcitx5-asr",
+            "listen",
+            "--ptt-key",
+            "Super_L",
+            "--ptt-key",
+            "F8",
+        ]);
+        match args.command {
+            Command::Listen {
+                ptt_keys, trigger, ..
+            } => {
+                assert_eq!(ptt_keys, ["Super_L", "F8"]);
+                assert!(matches!(trigger, Trigger::Vad));
+            }
+            _ => panic!("expected listen"),
+        }
+    }
 }
