@@ -6,7 +6,8 @@ use std::sync::mpsc::{self, Receiver, SyncSender};
 /// Microphone capture as mono f32 chunks. The stream owns the callback thread;
 /// callers drain `receiver` without touching cpal from async code.
 pub struct AudioCapture {
-    stream: Stream,
+    // Dropping Stream stops the callback thread.
+    _stream: Stream,
     receiver: Receiver<Vec<f32>>,
     pub sample_rate: u32,
     pub channels: u16,
@@ -20,22 +21,33 @@ impl AudioCapture {
         let supported = device.default_input_config().context("no input config")?;
         let sample_format = supported.sample_format();
         let config: StreamConfig = supported.into();
-        let (tx, receiver) = mpsc::sync_channel(32);
+        // Hold ~10 s of 128-frame PipeWire periods so inference can run
+        // without pausing the mic and dropping the next utterance.
+        let (tx, receiver) = mpsc::sync_channel(8192);
         let channels = config.channels;
         let err = |e| tracing::error!("audio stream error: {e}");
         let stream = match sample_format {
             SampleFormat::F32 => build(&device, &config, channels, tx, err, |s: f32| s),
-            SampleFormat::I16 => build(&device, &config, channels, tx, err, |s: i16| s as f32 / i16::MAX as f32),
-            SampleFormat::U16 => build(&device, &config, channels, tx, err, |s: u16| (s as f32 / 32768.0) - 1.0),
+            SampleFormat::I16 => build(&device, &config, channels, tx, err, |s: i16| {
+                s as f32 / i16::MAX as f32
+            }),
+            SampleFormat::U16 => build(&device, &config, channels, tx, err, |s: u16| {
+                (s as f32 / 32768.0) - 1.0
+            }),
             other => return Err(anyhow!("unsupported sample format: {other:?}")),
         }?;
         stream.play().context("starting input stream")?;
-        Ok(Self { stream, receiver, sample_rate: config.sample_rate, channels })
+        Ok(Self {
+            _stream: stream,
+            receiver,
+            sample_rate: config.sample_rate,
+            channels,
+        })
     }
 
-    pub fn receiver(&self) -> &Receiver<Vec<f32>> { &self.receiver }
-    pub fn pause(&self) { let _ = self.stream.pause(); }
-    pub fn resume(&self) { let _ = self.stream.play(); }
+    pub fn receiver(&self) -> &Receiver<Vec<f32>> {
+        &self.receiver
+    }
 }
 
 fn build<T: cpal::SizedSample, F: Fn(T) -> f32 + Send + 'static>(
