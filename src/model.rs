@@ -47,7 +47,6 @@ pub type KvCache = Vec<DynValue>;
 
 pub struct Transcript {
     pub text: String,
-    pub first_logit: f32,
 }
 
 /// True when the whole transcript is a hesitation marker or punctuation.
@@ -140,10 +139,6 @@ impl ArkModel {
         let (logits, mut cache) = self.decode_prompt_with_cache(&prompt, seq)?;
         let first = last_logits(&logits);
         let mut token = self.greedy_token(first);
-        let first_logit = first
-            .get(token as usize)
-            .copied()
-            .unwrap_or(f32::NEG_INFINITY);
         println!(
             "ARK first token: {token} ({:?}), top={:?}",
             self.decode_tokens(&[token]),
@@ -166,11 +161,8 @@ impl ArkModel {
                 repeats = 0;
                 last_token = Some(token);
             }
-            const NGRAM: usize = 8;
-            if ids.len() >= NGRAM * 2
-                && ids[ids.len() - NGRAM * 2..ids.len() - NGRAM] == ids[ids.len() - NGRAM..]
-            {
-                ids.truncate(ids.len() - NGRAM);
+            if let Some(n) = repeated_ngram(&ids) {
+                ids.truncate(ids.len() - 2 * n);
                 break;
             }
             let embed = self.embed(&[token])?;
@@ -179,7 +171,6 @@ impl ArkModel {
         }
         Ok(Transcript {
             text: normalize_prediction_text(&self.decode_tokens(&ids)),
-            first_logit,
         })
     }
 
@@ -468,38 +459,102 @@ fn collapse_ws(text: &str) -> String {
     out
 }
 
+fn repeated_ngram(ids: &[i64]) -> Option<usize> {
+    let len = ids.len();
+    for n in 2..=48.min(len / 3) {
+        if ids[len - n..] == ids[len - 2 * n..len - n]
+            && ids[len - 2 * n..len - n] == ids[len - 3 * n..len - 2 * n]
+        {
+            return Some(n);
+        }
+    }
+    None
+}
+
+fn is_sent_end(c: char) -> bool {
+    matches!(c, '.' | '。' | '?' | '？' | '!' | '！')
+}
+
 fn collapse_repeated_phrase(text: &str) -> String {
     let t = text.trim();
     if t.is_empty() {
         return String::new();
     }
-    for sep in ["。", "？", "！", "? ", "! ", ". "] {
-        let Some(head) = t.split(sep).next() else {
-            continue;
-        };
-        if head.is_empty() {
+    collapse_duplicate_sentences(&collapse_tiled(t))
+}
+
+fn collapse_tiled(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let n = chars.len();
+    if n < 8 {
+        return text.to_string();
+    }
+    for period in 4..=n / 3 {
+        let last = chars[period - 1];
+        if !(is_sent_end(last) || last == ' ') {
             continue;
         }
-        let unit = format!("{head}{}", sep.trim_end());
-        let unit_spaced = format!("{head}{sep}");
-        let mut n = 0;
-        let mut rest = t;
-        loop {
-            let u = if rest.starts_with(&unit_spaced) {
-                &unit_spaced
-            } else if rest.starts_with(&unit) {
-                &unit
-            } else {
-                break;
-            };
-            rest = &rest[u.len()..];
-            n += 1;
+        let unit = &chars[..period];
+        let mut copies = 0;
+        let mut i = 0;
+        while i + period <= n && chars[i..i + period] == *unit {
+            copies += 1;
+            i += period;
         }
-        if n >= 3 {
-            return unit;
+        let tail_ok = i == n || unit.starts_with(&chars[i..]);
+        if copies >= 3 && tail_ok {
+            return unit.iter().collect::<String>().trim().to_string();
         }
     }
-    t.to_string()
+    text.to_string()
+}
+
+fn collapse_duplicate_sentences(text: &str) -> String {
+    let mut parts = Vec::new();
+    let mut cur = String::new();
+    for c in text.chars() {
+        cur.push(c);
+        if is_sent_end(c) {
+            let piece = cur.trim().to_string();
+            if !piece.is_empty() {
+                parts.push(piece);
+            }
+            cur.clear();
+        }
+    }
+    let tail = cur.trim();
+    if !tail.is_empty() {
+        parts.push(tail.to_string());
+    }
+    let mut out: Vec<String> = Vec::new();
+    for p in parts {
+        let core: String = p
+            .chars()
+            .filter(|c| !is_sent_end(*c) && !c.is_whitespace())
+            .collect();
+        let dup = out.last().is_some_and(|last| {
+            let last_core: String = last
+                .chars()
+                .filter(|c| !is_sent_end(*c) && !c.is_whitespace())
+                .collect();
+            !core.is_empty() && last_core == core
+        });
+        if !dup {
+            out.push(p);
+        }
+    }
+    let mut s = String::new();
+    for (i, p) in out.iter().enumerate() {
+        if i > 0 {
+            let prev_end = out[i - 1].chars().last().is_some_and(is_sent_end);
+            let cjk = p.chars().next().is_some_and(|c| !c.is_ascii());
+            if prev_end && !cjk && !p.starts_with(' ') {
+                s.push(' ');
+            }
+        }
+        s.push_str(p);
+    }
+    s
 }
 
 fn last_logits(logits: &[f32]) -> &[f32] {
@@ -535,7 +590,7 @@ fn materialize(path: &std::path::Path, data: Option<&std::path::Path>) -> Result
 mod tests {
     use super::{
         ASR_BLOCK_FROM, ArkConfig, EOS_TOKEN_ID, PAD_TOKEN_ID, VOCAB,
-        apply_official_decode_contract, is_filler, normalize_prediction_text,
+        apply_official_decode_contract, is_filler, normalize_prediction_text, repeated_ngram,
     };
 
     #[test]
@@ -556,6 +611,13 @@ mod tests {
     }
 
     #[test]
+    fn repeated_ngram_catches_any_period() {
+        let ids: Vec<i64> = [7, 8, 9, 13].iter().copied().cycle().take(12).collect();
+        assert_eq!(repeated_ngram(&ids), Some(4));
+        assert_eq!(repeated_ngram(&[1, 2, 3, 4, 5, 6]), None);
+    }
+
+    #[test]
     fn normalize_strips_turn_markers_and_repeats() {
         assert_eq!(
             normalize_prediction_text("Hello.<|im_end|> leftover"),
@@ -566,6 +628,14 @@ mod tests {
                 "Are you listening to me? Are you listening to me? Are you listening to me? Are you listening to"
             ),
             "Are you listening to me?"
+        );
+        let looped = "Okay. Let's talk. ".repeat(12) + "Okay. Let's";
+        assert_eq!(normalize_prediction_text(&looped), "Okay. Let's talk.");
+        assert_eq!(
+            normalize_prediction_text(
+                "おはようございます。ありがとう。ありがとう。ありがとう。ありがとう"
+            ),
+            "おはようございます。ありがとう。"
         );
     }
 
