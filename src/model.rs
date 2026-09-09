@@ -27,6 +27,11 @@ fn default_trim_features() -> usize {
 const REPO: &str = "OpenVoiceOS/ARK-ASR-0.6B-onnx";
 const VOCAB: usize = 163_958;
 const HIDDEN: usize = 896;
+/// Official generation_config.json / ark_asr_transformers.py.
+const PAD_TOKEN_ID: i64 = 151_643; // <|endoftext|>
+const EOS_TOKEN_ID: i64 = 151_645; // <|im_end|>
+const ASR_BLOCK_FROM: usize = 151_670; // <|bicodec_global_0|> and above
+pub const MAX_NEW_TOKENS: usize = 256;
 
 pub struct ArkModel {
     pub encoder: Session,
@@ -161,12 +166,19 @@ impl ArkModel {
                 repeats = 0;
                 last_token = Some(token);
             }
+            const NGRAM: usize = 8;
+            if ids.len() >= NGRAM * 2
+                && ids[ids.len() - NGRAM * 2..ids.len() - NGRAM] == ids[ids.len() - NGRAM..]
+            {
+                ids.truncate(ids.len() - NGRAM);
+                break;
+            }
             let embed = self.embed(&[token])?;
             let logits = self.decode_next(&embed, seq + ids.len() - 1, &mut cache)?;
             token = self.greedy_token(last_logits(&logits));
         }
         Ok(Transcript {
-            text: self.decode_tokens(&ids).trim().to_owned(),
+            text: normalize_prediction_text(&self.decode_tokens(&ids)),
             first_logit,
         })
     }
@@ -328,7 +340,7 @@ impl ArkModel {
         ));
         let tokenizer = Tokenizer::from_file(tok_repo.get("tokenizer.json")?)
             .map_err(|e| anyhow::anyhow!(e))?;
-        let settings: ArkConfig = serde_json::from_slice(&std::fs::read(&config)?)?;
+        let mut settings: ArkConfig = serde_json::from_slice(&std::fs::read(&config)?)?;
         let mut suppress_mask = vec![0u8; VOCAB];
         for &id in &settings.suppress_token_ids {
             if let Some(slot) = usize::try_from(id)
@@ -338,6 +350,7 @@ impl ArkModel {
                 *slot = 1;
             }
         }
+        apply_official_decode_contract(&mut settings, &mut suppress_mask);
         ort::init().with_name("fcitx5-asr").commit();
         Ok(Self {
             encoder: Session::builder()?.commit_from_file(encoder_path)?,
@@ -383,6 +396,112 @@ impl ArkModel {
     }
 }
 
+/// Match AutoArk ark_asr_transformers.py: pad is not EOS, specials except
+/// im_end are blocked, and tokens from the bicodec range are masked.
+fn apply_official_decode_contract(settings: &mut ArkConfig, suppress_mask: &mut [u8]) {
+    settings.eos_token_ids.retain(|&id| id != PAD_TOKEN_ID);
+    if !settings.eos_token_ids.contains(&EOS_TOKEN_ID) {
+        settings.eos_token_ids.push(EOS_TOKEN_ID);
+    }
+    if let Some(slot) = suppress_mask.get_mut(PAD_TOKEN_ID as usize) {
+        *slot = 1;
+    }
+    for slot in suppress_mask.iter_mut().skip(ASR_BLOCK_FROM) {
+        *slot = 1;
+    }
+}
+
+/// Port of normalize_prediction_text in ark_asr_transformers.py.
+pub fn normalize_prediction_text(text: &str) -> String {
+    let mut t = text.to_string();
+    let mut cut = t.len();
+    for marker in ["<|user|>", "<|assistant|>", "<|im_end|>"] {
+        if let Some(i) = t.find(marker) {
+            cut = cut.min(i);
+        }
+    }
+    t.truncate(cut);
+    if let Some(i) = t.find("<|text|>") {
+        t = t[i + "<|text|>".len()..].to_string();
+    }
+    t = strip_angle_tokens(&t);
+    t = collapse_ws(&t);
+    t = t
+        .trim_start_matches(|c: char| {
+            c.is_whitespace() || matches!(c, ',' | '.' | ';' | ':' | '!' | '?' | '-')
+        })
+        .to_string();
+    collapse_repeated_phrase(t.trim())
+}
+
+fn strip_angle_tokens(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("<|") {
+        out.push_str(&rest[..start]);
+        match rest[start..].find("|>") {
+            Some(end) => rest = &rest[start + end + 2..],
+            None => {
+                rest = &rest[start..];
+                break;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+fn collapse_ws(text: &str) -> String {
+    let mut out = String::new();
+    let mut prev_space = false;
+    for c in text.chars() {
+        if c.is_whitespace() {
+            if !prev_space {
+                out.push(' ');
+                prev_space = true;
+            }
+        } else {
+            prev_space = false;
+            out.push(c);
+        }
+    }
+    out
+}
+
+fn collapse_repeated_phrase(text: &str) -> String {
+    let t = text.trim();
+    if t.is_empty() {
+        return String::new();
+    }
+    for sep in ["。", "？", "！", "? ", "! ", ". "] {
+        let Some(head) = t.split(sep).next() else {
+            continue;
+        };
+        if head.is_empty() {
+            continue;
+        }
+        let unit = format!("{head}{}", sep.trim_end());
+        let unit_spaced = format!("{head}{sep}");
+        let mut n = 0;
+        let mut rest = t;
+        loop {
+            let u = if rest.starts_with(&unit_spaced) {
+                &unit_spaced
+            } else if rest.starts_with(&unit) {
+                &unit
+            } else {
+                break;
+            };
+            rest = &rest[u.len()..];
+            n += 1;
+        }
+        if n >= 3 {
+            return unit;
+        }
+    }
+    t.to_string()
+}
+
 fn last_logits(logits: &[f32]) -> &[f32] {
     logits
         .get(logits.len().saturating_sub(VOCAB)..)
@@ -414,7 +533,41 @@ fn materialize(path: &std::path::Path, data: Option<&std::path::Path>) -> Result
 
 #[cfg(test)]
 mod tests {
-    use super::is_filler;
+    use super::{
+        ASR_BLOCK_FROM, ArkConfig, EOS_TOKEN_ID, PAD_TOKEN_ID, VOCAB,
+        apply_official_decode_contract, is_filler, normalize_prediction_text,
+    };
+
+    #[test]
+    fn official_contract_masks_pad_not_im_end() {
+        let mut settings = ArkConfig {
+            eos_token_ids: vec![PAD_TOKEN_ID, EOS_TOKEN_ID],
+            prompt_prefix_ids: vec![],
+            prompt_suffix_ids: vec![],
+            suppress_token_ids: vec![],
+            trim_features: 8,
+        };
+        let mut mask = vec![0u8; VOCAB];
+        apply_official_decode_contract(&mut settings, &mut mask);
+        assert_eq!(settings.eos_token_ids, vec![EOS_TOKEN_ID]);
+        assert_eq!(mask[PAD_TOKEN_ID as usize], 1);
+        assert_eq!(mask[EOS_TOKEN_ID as usize], 0);
+        assert_eq!(mask[ASR_BLOCK_FROM], 1);
+    }
+
+    #[test]
+    fn normalize_strips_turn_markers_and_repeats() {
+        assert_eq!(
+            normalize_prediction_text("Hello.<|im_end|> leftover"),
+            "Hello."
+        );
+        assert_eq!(
+            normalize_prediction_text(
+                "Are you listening to me? Are you listening to me? Are you listening to me? Are you listening to"
+            ),
+            "Are you listening to me?"
+        );
+    }
 
     #[test]
     fn filler_catches_ark_silence_prior() {

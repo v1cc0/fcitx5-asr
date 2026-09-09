@@ -3,13 +3,12 @@ mod ipc;
 mod model;
 mod vad;
 
-use audio::{AudioCapture, AudioResampler, DcBlocker, TARGET_SAMPLE_RATE, load_wav_16k};
+use audio::{AudioCapture, AudioResampler, TARGET_SAMPLE_RATE, load_wav_16k};
 use clap::{Parser, Subcommand, ValueEnum};
 use ipc::{IpcClient, PttEvent, PttSocket};
 use vad::{EnergyVad, PttGate};
 
 const VAD_MIN_ABS: f32 = 0.015;
-const MIN_FIRST_LOGIT: f32 = 1.5;
 
 #[derive(Parser)]
 struct Args {
@@ -136,7 +135,7 @@ async fn main() -> anyhow::Result<()> {
             );
             let mut model = model::ArkModel::download_and_load(int8)?;
             let started = std::time::Instant::now();
-            let result = model.transcribe(&samples, 64)?;
+            let result = model.transcribe(&samples, model::MAX_NEW_TOKENS)?;
             println!(
                 "inference finished in {:.1}s",
                 started.elapsed().as_secs_f32()
@@ -181,12 +180,10 @@ async fn listen_vad(
     resampler: &mut AudioResampler,
 ) -> anyhow::Result<()> {
     let mut segmenter = EnergyVad::new(VAD_MIN_ABS);
-    let mut dc = DcBlocker::new();
     let mut chunks = 0usize;
     loop {
         let chunk = tokio::task::block_in_place(|| capture.receiver().recv())?;
-        let mut samples = resampler.process(&chunk);
-        dc.process_in_place(&mut samples);
+        let samples = resampler.process(&chunk);
         chunks += 1;
         if chunks % 100 == 0 {
             let rms =
@@ -210,7 +207,6 @@ async fn listen_ptt(
 ) -> anyhow::Result<()> {
     let ptt = PttSocket::bind()?;
     let mut gate = PttGate::new();
-    let mut dc = DcBlocker::new();
     loop {
         for event in ptt.poll() {
             match event {
@@ -235,11 +231,7 @@ async fn listen_ptt(
             .receiver()
             .recv_timeout(std::time::Duration::from_millis(20))
         {
-            Ok(chunk) => {
-                let mut samples = resampler.process(&chunk);
-                dc.process_in_place(&mut samples);
-                gate.push(&samples);
-            }
+            Ok(chunk) => gate.push(&resampler.process(&chunk)),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         }
@@ -258,7 +250,7 @@ async fn commit_transcript(
         samples.len() as f32 / TARGET_SAMPLE_RATE as f32
     );
     let started = std::time::Instant::now();
-    let result = tokio::task::block_in_place(|| model.transcribe(samples, 64))?;
+    let result = tokio::task::block_in_place(|| model.transcribe(samples, model::MAX_NEW_TOKENS))?;
     println!(
         "inference finished in {:.1}s",
         started.elapsed().as_secs_f32()
@@ -268,11 +260,6 @@ async fn commit_transcript(
         println!("recognition result: <empty/EOS> (model selected EOS)");
     } else if model::is_filler(&text) {
         println!("recognition result: {text} (skipped filler)");
-    } else if result.first_logit < MIN_FIRST_LOGIT {
-        println!(
-            "recognition result: {text} (skipped low confidence {:.2})",
-            result.first_logit
-        );
     } else {
         println!("recognition result: {text}");
         client.commit(&text).await?;
