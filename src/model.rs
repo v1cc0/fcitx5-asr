@@ -505,11 +505,19 @@ impl ArkModel {
                 *slot = 1;
             }
         }
-        ort::init().with_name("fcitx5-asr").commit();
+        ort::init()
+            .with_name("fcitx5-asr")
+            .with_global_thread_pool(
+                ort::environment::GlobalThreadPoolOptions::default()
+                    .with_intra_threads(2)?
+                    .with_inter_threads(1)?
+                    .with_spin_control(false)?,
+            )
+            .commit();
         Ok(Self {
-            audio: Session::builder()?.commit_from_file(audio_path)?,
-            prefill: Session::builder()?.commit_from_file(prefill_path)?,
-            decode: Session::builder()?.commit_from_file(decode_path)?,
+            audio: load_session(&audio_path)?,
+            prefill: load_session(&prefill_path)?,
+            decode: load_session(&decode_path)?,
             config: meta,
             tokenizer,
             token_embedding,
@@ -530,6 +538,15 @@ fn last_token_logits(logits: &[f32], seq: usize) -> Result<Vec<f32>> {
     );
     let vocab = logits.len() / seq;
     Ok(logits[(seq - 1) * vocab..].to_vec())
+}
+
+fn load_session(path: &Path) -> Result<Session> {
+    let mut builder = Session::builder()?
+        .with_memory_pattern(true)
+        .map_err(|e| anyhow::anyhow!("{e}"))?
+        .with_execution_providers([ort::ep::CPU::default().with_arena_allocator(false).build()])
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    Ok(builder.commit_from_file(path)?)
 }
 
 fn get(repo: &hf_hub::api::sync::ApiRepo, name: &str) -> Result<PathBuf> {
