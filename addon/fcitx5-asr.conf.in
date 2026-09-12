@@ -1,6 +1,8 @@
 [Addon]
-Name=ASR Voice Bridge
-Comment=Speech recognition bridge for Fcitx5
+Name=ASR
+Name[zh_CN]=语音识别
+Comment=Speech recognition for Fcitx5
+Comment[zh_CN]=语音识别输入
 Category=Module
 Type=SharedLibrary
 Library=@FCITX5_ASR_LIB_PATH@

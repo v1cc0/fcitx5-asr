@@ -3,10 +3,16 @@ mod ipc;
 mod model;
 mod vad;
 
+use anyhow::Context;
 use audio::{AudioCapture, AudioResampler, TARGET_SAMPLE_RATE, load_wav_16k};
 use clap::{Parser, Subcommand, ValueEnum};
 use ipc::{DEFAULT_PTT_KEYS, IpcClient, PttEvent, PttSocket, format_ptt_hold};
+use std::fs::{File, OpenOptions};
+use std::path::{Path, PathBuf};
 use vad::{EnergyVad, PttGate};
+
+const RECOGNIZING: &str = "识别中...";
+const LISTENING: &str = "聆听中...";
 
 const VAD_MIN_ABS: f32 = 0.015;
 
@@ -157,28 +163,80 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn default_lock_path() -> PathBuf {
+    if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
+        if !dir.is_empty() {
+            return PathBuf::from(dir).join("fcitx5-asr.lock");
+        }
+    }
+    let uid = unsafe { libc::getuid() };
+    PathBuf::from(format!("/tmp/fcitx5-asr-{uid}.lock"))
+}
+
+fn take_listen_lock_at(path: &Path) -> anyhow::Result<File> {
+    let file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open(path)
+        .with_context(|| format!("opening {}", path.display()))?;
+    file.try_lock()
+        .with_context(|| format!("fcitx5-asr listen is already running ({})", path.display()))?;
+    Ok(file)
+}
+
+fn take_listen_lock() -> anyhow::Result<File> {
+    take_listen_lock_at(&default_lock_path())
+}
+
+async fn connect_retry() -> IpcClient {
+    let mut warned = false;
+    loop {
+        match IpcClient::connect().await {
+            Ok(client) => return client,
+            Err(err) => {
+                if !warned {
+                    eprintln!("waiting for Fcitx5 ASR addon ({err}); will retry");
+                    warned = true;
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+        }
+    }
+}
+
 async fn listen(int8: bool, trigger: Trigger, ptt_keys: Vec<String>) -> anyhow::Result<()> {
     let trigger = if ptt_keys.is_empty() {
         trigger
     } else {
         Trigger::Ptt
     };
+    let _lock = take_listen_lock()?;
     let mut model = model::ArkModel::download_and_load(int8)?;
-    let mut client = IpcClient::connect().await?;
     let capture = AudioCapture::default()?;
     let mut resampler = AudioResampler::new(capture.sample_rate);
-    match trigger {
-        Trigger::Vad => {
-            println!(
-                "listening at {} Hz, {} ch (VAD); Ctrl-C to stop",
-                capture.sample_rate, capture.channels
-            );
-            listen_vad(&mut model, &mut client, &capture, &mut resampler).await
-        }
-        Trigger::Ptt => {
-            listen_ptt(&mut model, &mut client, &capture, &mut resampler, &ptt_keys).await
+    if matches!(trigger, Trigger::Vad) {
+        println!(
+            "listening at {} Hz, {} ch (VAD)",
+            capture.sample_rate, capture.channels
+        );
+    }
+    loop {
+        let mut client = connect_retry().await;
+        let result = match trigger {
+            Trigger::Vad => listen_vad(&mut model, &mut client, &capture, &mut resampler).await,
+            Trigger::Ptt => {
+                listen_ptt(&mut model, &mut client, &capture, &mut resampler, &ptt_keys).await
+            }
+        };
+        match result {
+            Ok(()) => break,
+            Err(err) => {
+                eprintln!("fcitx5 bridge lost ({err}); retrying");
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
         }
     }
+    Ok(())
 }
 
 async fn listen_vad(
@@ -190,7 +248,10 @@ async fn listen_vad(
     let mut segmenter = EnergyVad::new(VAD_MIN_ABS);
     let mut chunks = 0usize;
     loop {
-        let chunk = tokio::task::block_in_place(|| capture.receiver().recv())?;
+        let chunk = match tokio::task::block_in_place(|| capture.receiver().recv()) {
+            Ok(chunk) => chunk,
+            Err(_) => return Ok(()),
+        };
         let samples = resampler.process(&chunk);
         chunks += 1;
         if chunks % 100 == 0 {
@@ -243,15 +304,15 @@ async fn listen_ptt(
                 PttEvent::Down => {
                     if !gate.is_held() {
                         println!("ptt: recording");
-                        let _ = client.preedit("...").await;
+                        let _ = client.preedit(LISTENING).await;
                     }
                     gate.set_held(true);
                 }
                 PttEvent::Up => {
-                    let _ = client.clear().await;
                     if let Some(samples) = gate.release() {
                         commit_transcript(model, client, &samples).await?;
                     } else {
+                        let _ = client.clear().await;
                         println!("ptt: discarded short utterance");
                     }
                 }
@@ -279,16 +340,27 @@ async fn commit_transcript(
         "segment detected: {:.2}s rms={rms:.4}; running ARK...",
         samples.len() as f32 / TARGET_SAMPLE_RATE as f32
     );
+    let _ = client.preedit(RECOGNIZING).await;
     let started = std::time::Instant::now();
-    let result = tokio::task::block_in_place(|| model.transcribe(samples, model::MAX_NEW_TOKENS))?;
+    let result =
+        match tokio::task::block_in_place(|| model.transcribe(samples, model::MAX_NEW_TOKENS)) {
+            Ok(result) => result,
+            Err(err) => {
+                eprintln!("inference failed: {err}");
+                let _ = client.clear().await;
+                return Ok(());
+            }
+        };
     println!(
         "inference finished in {:.1}s",
         started.elapsed().as_secs_f32()
     );
     let text = result.text;
     if text.is_empty() {
+        let _ = client.clear().await;
         println!("recognition result: <empty/EOS> (model selected EOS)");
     } else if model::is_filler(&text) {
+        let _ = client.clear().await;
         println!("recognition result: {text} (skipped filler)");
     } else {
         println!("recognition result: {text}");
@@ -322,5 +394,17 @@ mod tests {
             }
             _ => panic!("expected listen"),
         }
+    }
+
+    #[test]
+    fn listen_lock_is_exclusive() {
+        let path =
+            std::env::temp_dir().join(format!("fcitx5-asr-lock-test-{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let held = take_listen_lock_at(&path).unwrap();
+        assert!(take_listen_lock_at(&path).is_err());
+        drop(held);
+        take_listen_lock_at(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
     }
 }

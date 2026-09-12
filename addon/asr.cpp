@@ -20,6 +20,8 @@
 #include <fcitx-utils/key.h>
 #include <fcitx-utils/keysym.h>
 #include <fcitx-utils/log.h>
+#include <fcitx-utils/fs.h>
+#include <fcitx-utils/misc.h>
 #include <fcitx-utils/stringutils.h>
 #include <fcitx-utils/textformatflags.h>
 
@@ -95,6 +97,8 @@ public:
 
 private:
     void initSocket();
+    void spawnDaemon();
+    InputContext *targetIc() const;
     void handleNewConnection();
     void onKeyEvent(KeyEvent &event);
     bool sendPtt(bool down);
@@ -168,8 +172,9 @@ bool ClientSession::onReadable() {
 }
 
 AsrAddon::AsrAddon(Instance *instance) : instance_(instance) {
-    initSocket();
     reloadConfig();
+    initSocket();
+    spawnDaemon();
     keyWatch_ = instance_->watchEvent(
         EventType::InputContextKeyEvent, EventWatcherPhase::PreInputMethod,
         [this](Event &event) { onKeyEvent(static_cast<KeyEvent &>(event)); });
@@ -186,6 +191,28 @@ bool pathIsThisSocket(int fd, const std::string &path) {
         return false;
     }
     return fd_st.st_dev == path_st.st_dev && fd_st.st_ino == path_st.st_ino;
+}
+
+std::string findAsrBinary() {
+    if (const char *env = getenv("FCITX5_ASR_BIN"); env && env[0] != '\0') {
+        if (fs::isexe(env)) {
+            return env;
+        }
+    }
+    std::vector<std::string> cands;
+    if (const char *home = getenv("HOME"); home && home[0] != '\0') {
+        cands.push_back(std::string(home) + "/.local/bin/fcitx5-asr");
+        cands.push_back(std::string(home) + "/.cargo/bin/fcitx5-asr");
+        cands.push_back(std::string(home) + "/.cargo/target/release/fcitx5-asr");
+    }
+    cands.push_back("/usr/local/bin/fcitx5-asr");
+    cands.push_back("/usr/bin/fcitx5-asr");
+    for (const auto &p : cands) {
+        if (fs::isexe(p)) {
+            return p;
+        }
+    }
+    return "fcitx5-asr";
 }
 } // namespace
 
@@ -232,6 +259,24 @@ std::string AsrAddon::handlePttKeys(std::string_view args) {
     }
     safeSaveAsIni(config_, ConfPath);
     return "OK";
+}
+
+void AsrAddon::spawnDaemon() {
+    if (getenv("FCITX5_ASR_NO_DAEMON")) {
+        FCITX_INFO() << "fcitx5-asr: FCITX5_ASR_NO_DAEMON set, not starting listener";
+        return;
+    }
+    const std::string bin = findAsrBinary();
+    FCITX_INFO() << "fcitx5-asr: starting listener " << bin;
+    startProcess({bin, "listen", "--int8"});
+}
+
+InputContext *AsrAddon::targetIc() const {
+    auto *ic = instance_->inputContextManager().lastFocusedInputContext();
+    if (!ic) {
+        ic = instance_->mostRecentInputContext();
+    }
+    return ic;
 }
 
 void AsrAddon::initSocket() {
@@ -353,12 +398,7 @@ void AsrAddon::commitText(const std::string &text) {
     if (text.empty()) {
         return;
     }
-    // Prefer the actual focused context; mostRecentInputContext() may be a
-    // dummy context when no focus group is active.
-    auto *ic = instance_->inputContextManager().lastFocusedInputContext();
-    if (!ic) {
-        ic = instance_->mostRecentInputContext();
-    }
+    auto *ic = targetIc();
     if (!ic) {
         FCITX_WARN() << "fcitx5-asr: COMMIT dropped: no recent input context";
         return;
@@ -366,19 +406,21 @@ void AsrAddon::commitText(const std::string &text) {
     FCITX_INFO() << "fcitx5-asr: committing to input context";
     ic->inputPanel().reset();
     ic->updatePreedit();
+    ic->updateUserInterface(UserInterfaceComponent::InputPanel);
     ic->commitString(text);
     instance_->flushUI();
 }
 
 void AsrAddon::setPreedit(const std::string &text) {
-    auto *ic = instance_->mostRecentInputContext();
+    auto *ic = targetIc();
     if (!ic) {
         return;
     }
     ic->inputPanel().reset();
     if (!text.empty()) {
-        Text preeditText(text, TextFormatFlag::Underline);
-        ic->inputPanel().setClientPreedit(preeditText);
+        // Floating panel only. Client preedit would type "识别中..." into the app.
+        ic->inputPanel().setAuxUp(Text("ASR"));
+        ic->inputPanel().setPreedit(Text(text, TextFormatFlag::Underline));
     }
     ic->updatePreedit();
     ic->updateUserInterface(UserInterfaceComponent::InputPanel);
@@ -386,7 +428,7 @@ void AsrAddon::setPreedit(const std::string &text) {
 }
 
 void AsrAddon::clearPreedit() {
-    auto *ic = instance_->mostRecentInputContext();
+    auto *ic = targetIc();
     if (!ic) {
         return;
     }
