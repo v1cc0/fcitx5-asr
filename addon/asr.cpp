@@ -246,7 +246,10 @@ void spawnListener(const std::string &bin) {
     std::string arg0 = bin;
     std::string arg1 = "listen";
     std::string arg2 = "--int8";
-    char *argv[] = {arg0.data(), arg1.data(), arg2.data(), nullptr};
+    std::string arg3 = "--trigger";
+    std::string arg4 = "ptt";
+    char *argv[] = {arg0.data(), arg1.data(), arg2.data(), arg3.data(),
+                    arg4.data(), nullptr};
 
     pid_t pid = 0;
     int rc = posix_spawn(&pid, bin.c_str(), &actions, &attr, argv, environ);
