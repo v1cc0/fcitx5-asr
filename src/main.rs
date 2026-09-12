@@ -188,12 +188,16 @@ fn take_listen_lock() -> anyhow::Result<File> {
     take_listen_lock_at(&default_lock_path())
 }
 
-async fn connect_retry() -> IpcClient {
+async fn connect_retry(give_up_after: Option<std::time::Duration>) -> anyhow::Result<IpcClient> {
+    let deadline = give_up_after.map(|d| tokio::time::Instant::now() + d);
     let mut warned = false;
     loop {
         match IpcClient::connect().await {
-            Ok(client) => return client,
+            Ok(client) => return Ok(client),
             Err(err) => {
+                if deadline.is_some_and(|t| tokio::time::Instant::now() >= t) {
+                    return Err(err);
+                }
                 if !warned {
                     eprintln!("waiting for Fcitx5 ASR addon ({err}); will retry");
                     warned = true;
@@ -212,6 +216,7 @@ async fn listen(int8: bool, trigger: Trigger, ptt_keys: Vec<String>) -> anyhow::
     };
     let _lock = take_listen_lock()?;
     let mut model = model::ArkModel::download_and_load(int8)?;
+    let mut client = connect_retry(None).await?;
     let capture = AudioCapture::default()?;
     let mut resampler = AudioResampler::new(capture.sample_rate);
     if matches!(trigger, Trigger::Vad) {
@@ -221,7 +226,6 @@ async fn listen(int8: bool, trigger: Trigger, ptt_keys: Vec<String>) -> anyhow::
         );
     }
     loop {
-        let mut client = connect_retry().await;
         let result = match trigger {
             Trigger::Vad => listen_vad(&mut model, &mut client, &capture, &mut resampler).await,
             Trigger::Ptt => {
@@ -232,7 +236,10 @@ async fn listen(int8: bool, trigger: Trigger, ptt_keys: Vec<String>) -> anyhow::
             Ok(()) => break,
             Err(err) => {
                 eprintln!("fcitx5 bridge lost ({err}); retrying");
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                match connect_retry(Some(std::time::Duration::from_secs(5))).await {
+                    Ok(next) => client = next,
+                    Err(_) => break,
+                }
             }
         }
     }
@@ -261,6 +268,10 @@ async fn listen_vad(
                 "audio: {chunks} chunks, rms={rms:.4}, noise={:.4}",
                 segmenter.noise_floor()
             );
+            match client.ping().await {
+                Ok(true) => {}
+                Ok(false) | Err(_) => anyhow::bail!("fcitx5 bridge ping failed"),
+            }
         }
         for samples in segmenter.push(&samples) {
             commit_transcript(model, client, &samples).await?;

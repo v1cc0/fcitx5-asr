@@ -21,15 +21,17 @@
 #include <fcitx-utils/keysym.h>
 #include <fcitx-utils/log.h>
 #include <fcitx-utils/fs.h>
-#include <fcitx-utils/misc.h>
 #include <fcitx-utils/stringutils.h>
 #include <fcitx-utils/textformatflags.h>
 
 #include <fcntl.h>
+#include <spawn.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
 #include <unistd.h>
+
+extern char **environ;
 
 #include <cerrno>
 #include <cstring>
@@ -214,6 +216,49 @@ std::string findAsrBinary() {
     }
     return "fcitx5-asr";
 }
+
+std::string runtimeFile(const char *name) {
+    if (const char *runtimeDir = getenv("XDG_RUNTIME_DIR");
+        runtimeDir && runtimeDir[0] != '\0') {
+        return std::string(runtimeDir) + "/" + name;
+    }
+    return std::string("/tmp/") + name + "-" + std::to_string(getuid());
+}
+
+// startProcess keeps stdin/stdout/stderr. A foreground `fcitx5 -r` then
+// leaves listen writing to the tty (and holding the mic) after Ctrl-C.
+void spawnListener(const std::string &bin) {
+    const std::string log = runtimeFile("fcitx5-asr.log");
+    posix_spawn_file_actions_t actions;
+    posix_spawnattr_t attr;
+    if (posix_spawn_file_actions_init(&actions) != 0) {
+        FCITX_ERROR() << "fcitx5-asr: posix_spawn_file_actions_init failed";
+        return;
+    }
+    posix_spawnattr_init(&attr);
+    posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSID);
+    posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null",
+                                     O_RDONLY, 0);
+    posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, log.c_str(),
+                                     O_WRONLY | O_CREAT | O_APPEND, 0600);
+    posix_spawn_file_actions_adddup2(&actions, STDOUT_FILENO, STDERR_FILENO);
+
+    std::string arg0 = bin;
+    std::string arg1 = "listen";
+    std::string arg2 = "--int8";
+    char *argv[] = {arg0.data(), arg1.data(), arg2.data(), nullptr};
+
+    pid_t pid = 0;
+    int rc = posix_spawn(&pid, bin.c_str(), &actions, &attr, argv, environ);
+    posix_spawn_file_actions_destroy(&actions);
+    posix_spawnattr_destroy(&attr);
+    if (rc != 0) {
+        FCITX_ERROR() << "fcitx5-asr: failed to spawn listener: " << strerror(rc);
+        return;
+    }
+    FCITX_INFO() << "fcitx5-asr: started listener pid=" << pid
+                 << " log=" << log;
+}
 } // namespace
 
 AsrAddon::~AsrAddon() {
@@ -268,7 +313,7 @@ void AsrAddon::spawnDaemon() {
     }
     const std::string bin = findAsrBinary();
     FCITX_INFO() << "fcitx5-asr: starting listener " << bin;
-    startProcess({bin, "listen", "--int8"});
+    spawnListener(bin);
 }
 
 InputContext *AsrAddon::targetIc() const {
