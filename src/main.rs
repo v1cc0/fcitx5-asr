@@ -222,7 +222,11 @@ async fn listen(int8: bool, trigger: Trigger, ptt_keys: Vec<String>) -> anyhow::
     };
     let mut model = model::ArkModel::download_and_load(int8)?;
     let mut client = connect_retry(None).await?;
-    let capture = AudioCapture::default()?;
+    let capture = if matches!(trigger, Trigger::Ptt) {
+        AudioCapture::paused()?
+    } else {
+        AudioCapture::default()?
+    };
     let mut resampler = AudioResampler::new(capture.sample_rate);
     if matches!(trigger, Trigger::Vad) {
         println!(
@@ -336,11 +340,13 @@ async fn listen_ptt(
                 PttEvent::Down => {
                     if !gate.is_held() {
                         println!("ptt: recording");
+                        let _ = capture.play();
                         let _ = client.preedit(LISTENING).await;
                     }
                     gate.set_held(true);
                 }
                 PttEvent::Up => {
+                    let _ = capture.pause();
                     if let Some(samples) = gate.release() {
                         commit_transcript(model, client, &samples).await?;
                     } else {

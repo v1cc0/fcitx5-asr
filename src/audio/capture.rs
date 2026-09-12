@@ -7,7 +7,7 @@ use std::sync::mpsc::{self, Receiver, SyncSender};
 /// callers drain `receiver` without touching cpal from async code.
 pub struct AudioCapture {
     // Dropping Stream stops the callback thread.
-    _stream: Stream,
+    stream: Stream,
     receiver: Receiver<Vec<f32>>,
     pub sample_rate: u32,
     pub channels: u16,
@@ -15,9 +15,16 @@ pub struct AudioCapture {
 
 impl AudioCapture {
     pub fn default() -> Result<Self> {
-        let device = cpal::default_host()
-            .default_input_device()
-            .context("no default input device")?;
+        Self::open(true)
+    }
+
+    pub fn paused() -> Result<Self> {
+        Self::open(false)
+    }
+
+    fn open(play: bool) -> Result<Self> {
+        let host = cpal::default_host();
+        let device = shared_input_device(&host)?;
         let supported = device.default_input_config().context("no input config")?;
         let sample_format = supported.sample_format();
         let config: StreamConfig = supported.into();
@@ -36,18 +43,57 @@ impl AudioCapture {
             }),
             other => return Err(anyhow!("unsupported sample format: {other:?}")),
         }?;
-        stream.play().context("starting input stream")?;
+        if play {
+            stream.play().context("starting input stream")?;
+        }
         Ok(Self {
-            _stream: stream,
+            stream,
             receiver,
             sample_rate: config.sample_rate,
             channels,
         })
     }
 
+    pub fn play(&self) -> Result<()> {
+        self.stream.play().context("play input")?;
+        Ok(())
+    }
+
+    pub fn pause(&self) -> Result<()> {
+        self.stream.pause().context("pause input")?;
+        Ok(())
+    }
+
     pub fn receiver(&self) -> &Receiver<Vec<f32>> {
         &self.receiver
     }
+}
+
+fn shared_input_device(host: &cpal::Host) -> Result<cpal::Device> {
+    // cpal's ALSA "default" follows asoundrc, which here is hw:HK2 and exclusive.
+    // pipewire/pulse keep the kernel device in PipeWire so rnnoise and monitors work.
+    if let Ok(devs) = host.input_devices() {
+        let named: Vec<_> = devs
+            .filter_map(|d| d.id().ok().map(|id| (id.id().to_string(), d)))
+            .collect();
+        for want in ["pipewire", "pulse"] {
+            if let Some((_, dev)) = named.iter().find(|(n, _)| n == want) {
+                println!("audio input: {want}");
+                return Ok(dev.clone());
+            }
+        }
+    }
+    let device = host
+        .default_input_device()
+        .context("no default input device")?;
+    println!(
+        "audio input: {}",
+        device
+            .id()
+            .map(|id| id.id().to_string())
+            .unwrap_or_else(|_| "default".into())
+    );
+    Ok(device)
 }
 
 fn build<T: cpal::SizedSample, F: Fn(T) -> f32 + Send + 'static>(
