@@ -215,6 +215,11 @@ async fn listen(int8: bool, trigger: Trigger, ptt_keys: Vec<String>) -> anyhow::
         Trigger::Ptt
     };
     let _lock = take_listen_lock()?;
+    let ptt_sock = if matches!(trigger, Trigger::Ptt) {
+        Some(PttSocket::bind()?)
+    } else {
+        None
+    };
     let mut model = model::ArkModel::download_and_load(int8)?;
     let mut client = connect_retry(None).await?;
     let capture = AudioCapture::default()?;
@@ -229,7 +234,15 @@ async fn listen(int8: bool, trigger: Trigger, ptt_keys: Vec<String>) -> anyhow::
         let result = match trigger {
             Trigger::Vad => listen_vad(&mut model, &mut client, &capture, &mut resampler).await,
             Trigger::Ptt => {
-                listen_ptt(&mut model, &mut client, &capture, &mut resampler, &ptt_keys).await
+                listen_ptt(
+                    &mut model,
+                    &mut client,
+                    &capture,
+                    &mut resampler,
+                    ptt_sock.as_ref().expect("ptt socket"),
+                    &ptt_keys,
+                )
+                .await
             }
         };
         match result {
@@ -284,9 +297,9 @@ async fn listen_ptt(
     client: &mut IpcClient,
     capture: &AudioCapture,
     resampler: &mut AudioResampler,
+    ptt: &PttSocket,
     ptt_keys: &[String],
 ) -> anyhow::Result<()> {
-    let ptt = PttSocket::bind()?;
     if !ptt_keys.is_empty() {
         client.set_ptt_keys(ptt_keys).await?;
     }
@@ -309,7 +322,15 @@ async fn listen_ptt(
         format_ptt_hold(&shown)
     );
     let mut gate = PttGate::new();
+    let mut ticks = 0u32;
     loop {
+        ticks += 1;
+        if ticks.is_multiple_of(50) {
+            match client.ping().await {
+                Ok(true) => {}
+                Ok(false) | Err(_) => anyhow::bail!("fcitx5 bridge ping failed"),
+            }
+        }
         for event in ptt.poll() {
             match event {
                 PttEvent::Down => {

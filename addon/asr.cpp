@@ -26,6 +26,7 @@
 
 #include <fcntl.h>
 #include <spawn.h>
+#include <sys/file.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
@@ -100,6 +101,7 @@ public:
 private:
     void initSocket();
     void spawnDaemon();
+    void watchDaemon();
     InputContext *targetIc() const;
     void handleNewConnection();
     void onKeyEvent(KeyEvent &event);
@@ -113,6 +115,7 @@ private:
     int serverFd_ = -1;
     std::string socketPath_;
     std::unique_ptr<EventSourceIO> serverSource_;
+    std::unique_ptr<EventSourceTime> daemonWatch_;
     std::unique_ptr<HandlerTableEntry<EventHandler>> keyWatch_;
     std::unordered_map<int, std::unique_ptr<ClientSession>> clients_;
 };
@@ -177,6 +180,7 @@ AsrAddon::AsrAddon(Instance *instance) : instance_(instance) {
     reloadConfig();
     initSocket();
     spawnDaemon();
+    watchDaemon();
     keyWatch_ = instance_->watchEvent(
         EventType::InputContextKeyEvent, EventWatcherPhase::PreInputMethod,
         [this](Event &event) { onKeyEvent(static_cast<KeyEvent &>(event)); });
@@ -262,6 +266,22 @@ void spawnListener(const std::string &bin) {
     FCITX_INFO() << "fcitx5-asr: started listener pid=" << pid
                  << " log=" << log;
 }
+
+bool listenRunning() {
+    const std::string path = runtimeFile("fcitx5-asr.lock");
+    int fd = open(path.c_str(), O_RDWR | O_CREAT, 0600);
+    if (fd < 0) {
+        return false;
+    }
+    int rc = flock(fd, LOCK_EX | LOCK_NB);
+    if (rc == 0) {
+        flock(fd, LOCK_UN);
+        close(fd);
+        return false;
+    }
+    close(fd);
+    return true;
+}
 } // namespace
 
 AsrAddon::~AsrAddon() {
@@ -317,6 +337,19 @@ void AsrAddon::spawnDaemon() {
     const std::string bin = findAsrBinary();
     FCITX_INFO() << "fcitx5-asr: starting listener " << bin;
     spawnListener(bin);
+}
+
+void AsrAddon::watchDaemon() {
+    daemonWatch_ = instance_->eventLoop().addTimeEvent(
+        CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + 2000000ULL, 1000000ULL,
+        [this](EventSourceTime *src, uint64_t) {
+            if (!listenRunning()) {
+                FCITX_INFO() << "fcitx5-asr: listener died, restarting";
+                spawnDaemon();
+            }
+            src->setTime(now(CLOCK_MONOTONIC) + 2000000ULL);
+            return true;
+        });
 }
 
 InputContext *AsrAddon::targetIc() const {
