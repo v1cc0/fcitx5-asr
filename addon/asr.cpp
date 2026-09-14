@@ -178,8 +178,6 @@ bool ClientSession::onReadable() {
 
 AsrAddon::AsrAddon(Instance *instance) : instance_(instance) {
     reloadConfig();
-    initSocket();
-    spawnDaemon();
     watchDaemon();
     keyWatch_ = instance_->watchEvent(
         EventType::InputContextKeyEvent, EventWatcherPhase::PreInputMethod,
@@ -343,7 +341,10 @@ void AsrAddon::watchDaemon() {
     daemonWatch_ = instance_->eventLoop().addTimeEvent(
         CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + 2000000ULL, 1000000ULL,
         [this](EventSourceTime *src, uint64_t) {
-            if (!listenRunning()) {
+            if (serverFd_ < 0) {
+                initSocket();
+            }
+            if (serverFd_ >= 0 && !listenRunning()) {
                 FCITX_INFO() << "fcitx5-asr: listener died, restarting";
                 spawnDaemon();
             }

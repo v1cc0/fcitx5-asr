@@ -221,7 +221,7 @@ async fn listen(int8: bool, trigger: Trigger, ptt_keys: Vec<String>) -> anyhow::
         None
     };
     let mut model = model::ArkModel::download_and_load(int8)?;
-    let mut client = connect_retry(None).await?;
+    let mut client = connect_retry(Some(std::time::Duration::from_secs(5))).await?;
     let capture = if matches!(trigger, Trigger::Ptt) {
         AudioCapture::paused()?
     } else {
